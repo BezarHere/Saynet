@@ -68,13 +68,18 @@ static inline int _MarkSocketNonBlocking(NetSocket socket);
 
 static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
 
-static inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params);
+static inline int _ConnectSocket(NetSocket socket, const NetConnectionParams *params);
 static inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found);
 
 static inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out);
 
 // size is in/out
 static inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size);
+
+// sets the size for the recv and send buffers
+static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
+// sets the max msg size, Has no meaning for stream oriented sockets
+static inline int _SetMaxMessageSize(NetSocket socket, int new_size);
 
 static inline int _ReportError(int code, const char *format, ...);
 static inline void _PutColor(FILE *fp, ConsoleColor color);
@@ -89,6 +94,7 @@ static inline void _AbortClient(NetClient *client, const char *reason);
 
 static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
+
 
 // removes it from the linked list and returns it
 // returns null if no match can be found
@@ -121,14 +127,32 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	result_code = _CreateSocket(&client->socket, params);
 	ASSERT_CODE_RET(result_code);
 
-	result_code = _SocketConnect(client->socket, params);
-	ASSERT_CODE_RET(result_code);
+	if (params->connection_protocol == eNConnectProto_TCP)
+	{
+		result_code = _ConnectSocket(client->socket, params);
+		ASSERT_CODE_RET(result_code);
+	}
+	else
+	{
+		result_code = _BindSocket(client->socket, params);
+		ASSERT_CODE_RET(result_code);
+	}
 
 	return result_code;
 }
 
 errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	int result_code = 0;
+
+	if (params->connection_protocol == eNConnectProto_UDP)
+	{
+		server->socket = INVALID_SOCKET;
+		return _ReportError(
+			EBADF,
+
+			"can not open a server running on UDP, UDP is only client to client protocol"
+		);
+	}
 
 	_DestroyInternalData(server->_handle);
 	server->_handle = _CreateInternalData();
@@ -147,7 +171,7 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 
 	_GetSocketAddr(server->socket, &buffer);
 
-	printf("server hosted at %s\n", buffer);
+	printf("server %llu hosted at %s\n", server->socket, buffer);
 
 	return result_code;
 }
@@ -189,6 +213,11 @@ errno_t NetPollClient(NetClient *client) {
 }
 
 errno_t NetPollServer(NetServer *server) {
+	if (server->socket == INVALID_SOCKET || !NetIsServerValid(server))
+	{
+		return EINVAL;
+	}
+
 	while (true)
 	{
 		bool found = false;
@@ -358,7 +387,7 @@ inline int _StartNetService() {
 	if (result != EOK)
 	{
 		return _ReportError(
-			result,
+			WSAGetLastError(),
 
 			"wsa startup failed, net service can't be run"
 		);
@@ -373,7 +402,7 @@ inline int _StopNetService() {
 	if (result != EOK)
 	{
 		return _ReportError(
-			result,
+			WSAGetLastError(),
 
 			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
 		);
@@ -387,7 +416,7 @@ int _ConnectionProtocolToNative(NetConnectionProtocol proto) {
 	{
 	case eNConnectProto_TCP:
 		return SOCK_STREAM;
-	case eNConnectProto_UDB:
+	case eNConnectProto_UDP:
 		return SOCK_DGRAM;
 
 	default:
@@ -400,7 +429,7 @@ int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto) {
 	{
 	case eNConnectProto_TCP:
 		return IPPROTO_UDP;
-	case eNConnectProto_UDB:
+	case eNConnectProto_UDP:
 		return IPPROTO_TCP;
 
 	default:
@@ -542,7 +571,7 @@ int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	*pSocket = socket(
 		_AddressTypeToNative(params->address_type),
 		_ConnectionProtocolToNative(params->connection_protocol),
-		0
+		IPPROTO_UDP
 		// _ConnectionProtocolToNativeIP(params->connection_protocol)
 	);
 
@@ -550,6 +579,10 @@ int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	{
 		return _ReportError(WSAGetLastError(), "Failed to create a socket");
 	}
+
+	// FIXME: make this configurable by the user
+	_SetInternalBufferSizes(*pSocket, DefaultRecvBufferSz);
+	_SetMaxMessageSize(*pSocket, DefaultRecvBufferSz + 256);
 
 	return EOK;
 }
@@ -608,7 +641,7 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	return result_code;
 }
 
-inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params) {
+inline int _ConnectSocket(NetSocket socket, const NetConnectionParams *params) {
 	return _CallUseAddress(socket, params, connect, "while connecting socket");
 }
 
@@ -737,6 +770,61 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 	else
 	{
 		*size = result;
+	}
+
+	return EOK;
+}
+
+inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
+	int result_code = 0;
+
+	result_code = setsockopt(socket, SOL_SOCKET, SO_RCVBUF, (const char *)&new_size, sizeof(new_size));
+	if (result_code == SOCKET_ERROR)
+	{
+		return _ReportError(
+			WSAGetLastError(),
+
+			"failed to set the SO_RCVBUF for the socket %llu to %d",
+			socket,
+			new_size
+		);
+	}
+
+	result_code = setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (const char *)&new_size, sizeof(new_size));
+	if (result_code == SOCKET_ERROR)
+	{
+		return _ReportError(
+			WSAGetLastError(),
+
+			"failed to set the SO_SNDBUF for the socket %llu to %d",
+			socket,
+			new_size
+		);
+	}
+
+
+	return EOK;
+}
+
+inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
+
+	int result_code = setsockopt(
+		socket,
+		SOL_SOCKET,
+		SO_MAX_MSG_SIZE,
+		(const char *)&new_size,
+		sizeof(new_size)
+	);
+
+	if (result_code == SOCKET_ERROR)
+	{
+		return _ReportError(
+			WSAGetLastError(),
+
+			"failed to set the SO_MAX_MSG_SIZE for the socket %llu to %d",
+			socket,
+			new_size
+		);
 	}
 
 	return EOK;

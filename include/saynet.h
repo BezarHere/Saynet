@@ -45,7 +45,7 @@ typedef int (*NetClientRecvProc)(const struct NetClientID *client_id, NetPacketD
 typedef SAYNET_ENUM NetConnectionProtocol
 {
 	eNConnectProto_TCP,
-	eNConnectProto_UDB,
+	eNConnectProto_UDP,
 } NetConnectionProtocol;
 
 typedef SAYNET_ENUM NetAddressType
