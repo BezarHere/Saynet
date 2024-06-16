@@ -26,7 +26,8 @@ enum
 
 enum
 {
-	DefaultRecvBufferSz = 0x10000
+	DefaultRecvBufferSz = 0x10000,
+	MaxInactivityHits = 2500,
 };
 
 typedef enum ConsoleColor
@@ -43,8 +44,6 @@ typedef struct NetInternalData
 {
 	size_t recv_buffer_sz;
 	uint8_t *recv_buffer;
-
-
 } NetInternalData;
 
 static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
@@ -59,6 +58,7 @@ static inline int _MarkSocketNonBlocking(NetSocket socket);
 
 static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
 
+static inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params);
 static inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found);
 
 // size is in/out
@@ -70,6 +70,14 @@ static inline void _PutColor(FILE *fp, ConsoleColor color);
 static inline NetInternalData *_CreateInternalData();
 static inline void _DestroyInternalData(NetInternalData *ptr);
 
+static inline void _CloseClientID(const NetClientID *client_id);
+static inline void _CloseSocket(NetSocket socket);
+
+// removes it from the linked list and returns it
+// returns null if no match can be found
+static inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first,
+																														const NetClientID *client_id);
+
 #pragma endregion
 
 #pragma region(lib funcs)
@@ -80,8 +88,10 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	_DestroyInternalData(client->_handle);
 	client->_handle = _CreateInternalData();
 
-
 	result_code = _InitSocket(&client->socket, params);
+	ASSERT_CODE_RET(result_code);
+
+	result_code = _SocketConnect(&client->socket, params);
 	ASSERT_CODE_RET(result_code);
 
 	return result_code;
@@ -104,11 +114,16 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 
 }
 
-errno_t NetCloseClient(NetClient *client, const NetConnectionParams *params) {
+errno_t NetCloseClient(NetClient *client) {
+	_DestroyInternalData(client->_handle);
+	client->_handle = NULL;
+
+	_CloseSocket(client->socket);
+
 	return EFAULT;
 }
 
-errno_t NetCloseServer(NetServer *server, const NetConnectionParams *params) {
+errno_t NetCloseServer(NetServer *server) {
 	return EFAULT;
 }
 
@@ -164,6 +179,12 @@ errno_t NetPollServer(const NetServer *server) {
 		if (size < 0)
 		{
 			node->inactivity_hits++;
+
+			if (node->inactivity_hits >= MaxInactivityHits)
+			{
+				NetServerKickCLient(server, node, "inactivity");
+			}
+
 		}
 		else
 		{
@@ -183,6 +204,37 @@ errno_t NetPollServer(const NetServer *server) {
 			);
 		}
 	}
+}
+
+errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason) {
+
+	NetClientIDListNode *node = _ExtractNodeWithClientID(&server->p_client_ids, client_id);
+
+	if (node == NULL)
+	{
+		return _ReportError(
+			ENOENT,
+
+			"No client has the id {socket=%llu, address=\"%.*s\"}",
+			client_id->socket,
+			ARRAYSIZE(client_id->address),
+			client_id->address
+		);
+	}
+
+	_CloseClientID(client_id);
+
+	free(node);
+
+	printf(
+		"No client has the id {socket=%llu, address=\"%.*s\"}, reason=%s",
+		client_id->socket,
+		ARRAYSIZE(client_id->address),
+		client_id->address,
+		reason
+	);
+
+	return EOK;
 }
 
 #pragma endregion
@@ -378,7 +430,81 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	return result_code;
 }
 
+inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params) {
+	const short native_addr_type = _AddressTypeToNative(params->address_type);
+	const NetPort net_port = htons(params->port);
+
+	int result_code = -1;
+
+	if (params->address_type == eNAddrType_IP4)
+	{
+		struct sockaddr_in address = {0};
+		address.sin_family = native_addr_type;
+		address.sin_port = net_port;
+
+		result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
+
+		if (result_code != EOK)
+		{
+			return _ReportError(
+				result_code,
+
+				"inet_pton(%d, \"%.*s\", %p) failed",
+				native_addr_type,
+
+				strnlen(params->address, ARRAYSIZE(params->address)),
+				params->address,
+
+				&address.sin_addr
+			);
+		}
+
+		result_code = connect(socket, (SOCKADDR *)&address, sizeof(address));
+	}
+	else if (params->address_type == eNAddrType_IP6)
+	{
+		struct sockaddr_in6 address6 = {0};
+		address6.sin6_family = native_addr_type;
+		address6.sin6_port = net_port;
+
+		result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
+
+		if (result_code != EOK)
+		{
+			return _ReportError(
+				result_code,
+
+				"inet_pton(%d, \"%.*s\", %p) failed",
+				native_addr_type,
+
+				strnlen(params->address, ARRAYSIZE(params->address)),
+				params->address,
+
+				&address6.sin6_addr
+			);
+		}
+
+		result_code = connect(socket, (SOCKADDR *)&address6, sizeof(address6));
+	}
+
+	if (result_code != EOK)
+	{
+		return _ReportError(
+			result_code,
+
+			"failed to connect socket %llu to \"%.*s\"",
+			socket,
+
+			strnlen(params->address, ARRAYSIZE(params->address)),
+			params->address
+		);
+	}
+
+	return 0;
+}
+
 inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found) {
+	// TODO: change the address type between sockaddr_in & sockaddr_in6 depending on the server's address type
 	SOCKADDR addr = {0};
 	int addr_len = sizeof(addr);
 
@@ -510,6 +636,47 @@ inline void _DestroyInternalData(NetInternalData *ptr) {
 
 	free(ptr->recv_buffer);
 	free(ptr);
+}
+
+inline void _CloseClientID(const NetClientID *client_id) {
+	_CloseSocket(client_id->socket);
+	// client_id->socket = INVALID_SOCKET;
+}
+
+inline void _CloseSocket(NetSocket socket) {
+	shutdown(socket, SD_BOTH);
+	closesocket(socket);
+}
+
+inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first, const NetClientID *client_id) {
+	NetClientIDListNode *last = NULL;
+	NetClientIDListNode *node = *p_first;
+
+	while (node != NULL)
+	{
+		if (node->client_id.socket == client_id->socket)
+		{
+			if (last)
+			{
+				// skip the node
+				last->_next = node->_next;
+			}
+			else
+			{
+				// last can only equal null if we are at the first node
+				// thus, override first node to be the second node
+				*p_first = node->_next;
+			}
+
+
+			break;
+		}
+
+		last = node;
+		node = node->_next;
+	}
+
+	return NULL;
 }
 
 #pragma endregion

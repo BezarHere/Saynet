@@ -78,7 +78,7 @@ typedef struct NetClientIDListNode
 	NetClientID client_id;
 	uint32_t inactivity_hits;
 
-	struct _NetClientIDListNode *_next;
+	struct NetClientIDListNode *_next;
 } NetClientIDListNode;
 
 typedef struct NetInternalData *NetInternalHandle;
@@ -110,11 +110,14 @@ extern "C" {
 	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params);
 	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params);
 
-	SAYNET_API errno_t NetCloseClient(NetClient *client, const NetConnectionParams *params);
-	SAYNET_API errno_t NetCloseServer(NetServer *server, const NetConnectionParams *params);
+	SAYNET_API errno_t NetCloseClient(NetClient *client);
+	SAYNET_API errno_t NetCloseServer(NetServer *server);
 
 	SAYNET_API errno_t NetPollClient(const NetClient *client);
 	SAYNET_API errno_t NetPollServer(const NetServer *server);
+
+	// 'reason' is not owned by the function
+	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);
 
 #ifdef __cplusplus
 }
