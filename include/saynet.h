@@ -18,7 +18,7 @@ enum
 typedef uint64_t NetSocket;
 typedef uint16_t NetPort;
 
-typedef void *NetLibraryHandle;
+typedef struct NetObjectData *NetLibraryHandle;
 
 typedef char NetChar;
 
@@ -55,6 +55,7 @@ typedef SAYNET_ENUM NetAddressType
 	eNAddrType_IP6,
 } NetAddressType;
 
+
 typedef char NetAddressBuffer[NetAddressBufferSize];
 typedef struct NetConnectionParams
 {
@@ -66,9 +67,14 @@ typedef struct NetConnectionParams
 
 } NetConnectionParams;
 
-typedef struct NetObjectData
+
+typedef struct NetClientID
 {
-};
+	NetSocket socket;
+	NetAddressType address_type;
+	NetAddressBuffer address;
+} NetClientID;
+
 
 typedef struct NetClient
 {
@@ -83,6 +89,7 @@ typedef struct NetServer
 
 	NetLibraryHandle _handle;
 } NetServer;
+
 
 #ifdef __cplusplus
 extern "C" {

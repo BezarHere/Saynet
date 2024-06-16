@@ -68,6 +68,8 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	result_code = _SocketToListen(server->socket);
 	ASSERT_CODE_RET(result_code);
 
+	SOCKADDR wd;
+
 }
 
 errno_t NetCloseClient(NetClient *client, const NetConnectionParams *params) {
