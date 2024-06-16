@@ -46,6 +46,8 @@ typedef struct NetInternalData
 	uint8_t *recv_buffer;
 } NetInternalData;
 
+typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
+
 static WSADATA g_wsa;
 
 static inline int _StartNetService();
@@ -55,6 +57,9 @@ static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 static inline short _AddressTypeToNative(NetAddressType type);
 static inline NetAddressType _NativeToAddressType(short type);
+
+static inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
+																	CallUseAddressProc proc, const char *context);
 
 static inline int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
 static inline int _BindSocket(NetSocket socket, const NetConnectionParams *params);
@@ -387,22 +392,8 @@ inline NetAddressType _NativeToAddressType(short type) {
 	}
 }
 
-int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
-	*pSocket = socket(
-		AF_UNSPEC,
-		_ConnectionProtocolToNative(params->connection_protocol),
-		_ConnectionProtocolToNativeIP(params->connection_protocol)
-	);
-
-	if (*pSocket == INVALID_SOCKET)
-	{
-		return _ReportError(WSAGetLastError(), "Failed to create a socket");
-	}
-
-	return EOK;
-}
-
-int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
+inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
+													 const CallUseAddressProc proc, const char *context) {
 	const short native_addr_type = _AddressTypeToNative(params->address_type);
 	const NetPort net_port = htons(params->port);
 
@@ -416,12 +407,15 @@ int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
 
 		result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
 
-		if (result_code != EOK)
+		if (result_code != 1)
 		{
+			result_code = WSAGetLastError();
 			return _ReportError(
 				result_code,
 
-				"inet_pton(%d, \"%.*s\", %p) failed",
+				"%s: inet_pton(%d, \"%.*s\", %p) failed",
+				context,
+
 				native_addr_type,
 
 				strnlen(params->address, ARRAYSIZE(params->address)),
@@ -431,7 +425,7 @@ int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
 			);
 		}
 
-		result_code = bind(socket, (SOCKADDR *)&address, sizeof(address));
+		result_code = proc(socket, (SOCKADDR *)&address, sizeof(address));
 	}
 	else if (params->address_type == eNAddrType_IP6)
 	{
@@ -441,12 +435,15 @@ int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
 
 		result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
 
-		if (result_code != EOK)
+		if (result_code != 1)
 		{
+			result_code = WSAGetLastError();
 			return _ReportError(
 				result_code,
 
-				"inet_pton(%d, \"%.*s\", %p) failed",
+				"%s: inet_pton(%d, \"%.*s\", %p) failed",
+				context,
+
 				native_addr_type,
 
 				strnlen(params->address, ARRAYSIZE(params->address)),
@@ -456,11 +453,12 @@ int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
 			);
 		}
 
-		result_code = bind(socket, (SOCKADDR *)&address6, sizeof(address6));
+		result_code = proc(socket, (SOCKADDR *)&address6, sizeof(address6));
 	}
 
 	if (result_code != EOK)
 	{
+		result_code = WSAGetLastError();
 		return _ReportError(
 			result_code,
 
@@ -473,6 +471,26 @@ int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
 	}
 
 	return 0;
+}
+
+int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
+	*pSocket = socket(
+		_AddressTypeToNative(params->address_type),
+		_ConnectionProtocolToNative(params->connection_protocol),
+		0
+		// _ConnectionProtocolToNativeIP(params->connection_protocol)
+	);
+
+	if (*pSocket == INVALID_SOCKET)
+	{
+		return _ReportError(WSAGetLastError(), "Failed to create a socket");
+	}
+
+	return EOK;
+}
+
+int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
+	return _CallUseAddress(socket, params, bind, "while binding socket");
 }
 
 int _SocketToListen(NetSocket socket) {
@@ -526,76 +544,7 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 }
 
 inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params) {
-	const short native_addr_type = _AddressTypeToNative(params->address_type);
-	const NetPort net_port = htons(params->port);
-
-	int result_code = -1;
-
-	if (params->address_type == eNAddrType_IP4)
-	{
-		struct sockaddr_in address = {0};
-		address.sin_family = native_addr_type;
-		address.sin_port = net_port;
-
-		result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
-
-		if (result_code != EOK)
-		{
-			return _ReportError(
-				result_code,
-
-				"inet_pton(%d, \"%.*s\", %p) failed",
-				native_addr_type,
-
-				strnlen(params->address, ARRAYSIZE(params->address)),
-				params->address,
-
-				&address.sin_addr
-			);
-		}
-
-		result_code = connect(socket, (SOCKADDR *)&address, sizeof(address));
-	}
-	else if (params->address_type == eNAddrType_IP6)
-	{
-		struct sockaddr_in6 address6 = {0};
-		address6.sin6_family = native_addr_type;
-		address6.sin6_port = net_port;
-
-		result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
-
-		if (result_code != EOK)
-		{
-			return _ReportError(
-				result_code,
-
-				"inet_pton(%d, \"%.*s\", %p) failed",
-				native_addr_type,
-
-				strnlen(params->address, ARRAYSIZE(params->address)),
-				params->address,
-
-				&address6.sin6_addr
-			);
-		}
-
-		result_code = connect(socket, (SOCKADDR *)&address6, sizeof(address6));
-	}
-
-	if (result_code != EOK)
-	{
-		return _ReportError(
-			result_code,
-
-			"failed to connect socket %llu to \"%.*s\"",
-			socket,
-
-			strnlen(params->address, ARRAYSIZE(params->address)),
-			params->address
-		);
-	}
-
-	return 0;
+	return _CallUseAddress(socket, params, connect, "while connecting socket");
 }
 
 inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found) {
