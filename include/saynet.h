@@ -39,6 +39,7 @@ struct NetClientID;
 typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
 // user has to free the packet data, return value indicates the state of the packet
 // if the return value is not zero, then the client will know that the packet is bad (or such)
+// NOTE: on UDP, client_id's socket shouldn't be used (junk data), but the client address is useful
 typedef int (*NetClientRecvProc)(const struct NetClientID *client_id, NetPacketData packet_data);
 
 

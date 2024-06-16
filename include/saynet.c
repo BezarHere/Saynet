@@ -13,6 +13,12 @@
 #define EOK 0
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
+#define ASSERT_CLIENT_CREATION(code) if ((code) != EOK) \
+{return code; _AbortClient(client, "creation failure");}
+
+#define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
+{return code;} // TODO: implement a server abort function
+
 #define VERBOSE(...) printf(__VA_ARGS__)
 
 
@@ -44,6 +50,8 @@ typedef struct NetInternalData
 {
 	size_t recv_buffer_sz;
 	uint8_t *recv_buffer;
+
+	NetConnectionParams connection_params;
 } NetInternalData;
 
 typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
@@ -75,6 +83,8 @@ static inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out
 
 // size is in/out
 static inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size);
+static inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
+															NetAddressType addr_type, NetAddressBuffer *out_address);
 
 // sets the size for the recv and send buffers
 static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
@@ -118,24 +128,22 @@ static inline void *memclear(void *mem, size_t size) {
 errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	int result_code = 0;
 
-	result_code = _StartNetService();
-	ASSERT_CODE_RET(result_code);
+	client->socket = INVALID_SOCKET;
 
 	_DestroyInternalData(client->_handle);
 	client->_handle = _CreateInternalData();
+	client->_handle->connection_params = *params;
+
+	result_code = _StartNetService();
+	ASSERT_CLIENT_CREATION(result_code);
 
 	result_code = _CreateSocket(&client->socket, params);
-	ASSERT_CODE_RET(result_code);
+	ASSERT_CLIENT_CREATION(result_code);
 
 	if (params->connection_protocol == eNConnectProto_TCP)
 	{
 		result_code = _ConnectSocket(client->socket, params);
-		ASSERT_CODE_RET(result_code);
-	}
-	else
-	{
-		result_code = _BindSocket(client->socket, params);
-		ASSERT_CODE_RET(result_code);
+		ASSERT_CLIENT_CREATION(result_code);
 	}
 
 	return result_code;
@@ -144,28 +152,23 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	int result_code = 0;
 
-	if (params->connection_protocol == eNConnectProto_UDP)
-	{
-		server->socket = INVALID_SOCKET;
-		return _ReportError(
-			EBADF,
-
-			"can not open a server running on UDP, UDP is only client to client protocol"
-		);
-	}
+	server->socket = INVALID_SOCKET;
 
 	_DestroyInternalData(server->_handle);
 	server->_handle = _CreateInternalData();
+	server->_handle->connection_params = *params;
 
 	result_code = _StartNetService();
-	ASSERT_CODE_RET(result_code);
+	ASSERT_SERVER_CREATION(result_code);
 
 	result_code = _InitSocket(&server->socket, params);
-	ASSERT_CODE_RET(result_code);
+	ASSERT_SERVER_CREATION(result_code);
 
-
-	result_code = _SocketToListen(server->socket);
-	ASSERT_CODE_RET(result_code);
+	if (params->connection_protocol == eNConnectProto_TCP)
+	{
+		result_code = _SocketToListen(server->socket);
+		ASSERT_SERVER_CREATION(result_code);
+	}
 
 	NetAddressBuffer buffer = {0};
 
@@ -216,6 +219,12 @@ errno_t NetPollServer(NetServer *server) {
 	if (server->socket == INVALID_SOCKET || !NetIsServerValid(server))
 	{
 		return EINVAL;
+	}
+
+	// no need to poll if we aren't tcp
+	if (server->_handle->connection_params.connection_protocol != eNConnectProto_TCP)
+	{
+		return EOK;
 	}
 
 	while (true)
@@ -771,6 +780,94 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 	{
 		*size = result;
 	}
+
+	return EOK;
+}
+
+inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
+											 NetAddressType addr_type, NetAddressBuffer *out_address) {
+	const int native_addr_family = _AddressTypeToNative(addr_type);
+	const int original_size = *size;
+
+	memclear(*out_address, ARRAYSIZE(*out_address));
+
+	if (addr_type == eNAddrType_IP4)
+	{
+		SOCKADDR_IN addr = {0};
+		int len = sizeof(addr);
+
+		int result = recvfrom(socket, (char *)data, *size, 0, (SOCKADDR *)&addr, &len);
+
+		if (result < 0)
+		{
+			const int error = WSAGetLastError();
+
+			if (_IsSocketDisconnectionError(error))
+			{
+				*size = -2;
+			}
+			else
+			{
+				*size = -1;
+			}
+
+			return _ReportError(
+				error,
+
+				"failed to receive data to buffer [%p, len=%d] from socket %llu (UDP)",
+
+				data,
+				original_size,
+				socket
+			);
+		}
+
+
+		*size = result;
+
+
+		inet_ntop(native_addr_family, &addr, *out_address, ARRAYSIZE(*out_address));
+	}
+
+	else if (addr_type == eNAddrType_IP6)
+	{
+		SOCKADDR_IN6 addr = {0};
+		int len = sizeof(addr);
+
+		int result = recvfrom(socket, (char *)data, *size, 0, (SOCKADDR *)&addr, &len);
+
+		if (result < 0)
+		{
+			const int error = WSAGetLastError();
+
+			if (_IsSocketDisconnectionError(error))
+			{
+				*size = -2;
+			}
+			else
+			{
+				*size = -1;
+			}
+
+			return _ReportError(
+				error,
+
+				"failed to receive data to buffer [%p, len=%d] from socket %llu (UDP)",
+
+				data,
+				original_size,
+				socket
+			);
+		}
+
+
+		*size = result;
+
+
+		inet_ntop(native_addr_family, &addr, *out_address, ARRAYSIZE(*out_address));
+	}
+
+	(*out_address)[ARRAYSIZE(*out_address) - 1] = 0;
 
 	return EOK;
 }
