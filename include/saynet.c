@@ -73,10 +73,17 @@ static inline void _DestroyInternalData(NetInternalData *ptr);
 static inline void _CloseClientID(const NetClientID *client_id);
 static inline void _CloseSocket(NetSocket socket);
 
+static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
+static inline void _FreeClientIDNode(NetClientIDListNode *node);
+
 // removes it from the linked list and returns it
 // returns null if no match can be found
 static inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first,
 																														const NetClientID *client_id);
+
+// returns the node
+static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
+																											 NetClientIDListNode *node);
 
 #pragma endregion
 
@@ -120,10 +127,28 @@ errno_t NetCloseClient(NetClient *client) {
 
 	_CloseSocket(client->socket);
 
-	return EFAULT;
+	return EOK;
 }
 
 errno_t NetCloseServer(NetServer *server) {
+	_DestroyInternalData(server->_handle);
+
+	{
+		NetClientIDListNode *node = server->p_client_ids;
+
+		while (node)
+		{
+			_CloseClientID(&node->client_id);
+
+			NetClientIDListNode *next = node->_next;
+
+			_FreeClientIDNode(node);
+
+			node = next;
+		}
+
+	}
+
 	return EFAULT;
 }
 
@@ -147,7 +172,25 @@ errno_t NetPollServer(const NetServer *server) {
 		if (server->proc_client_joined)
 		{
 			int result = server->proc_client_joined(&client_id);
+
+			// user returned an error code while processing the new client, kick him
+			if (result)
+			{
+				_CloseClientID(&client_id);
+				VERBOSE(
+					"kicked client {socket=%llu, address=%.*s}, server code=%d",
+					client_id.socket,
+					ARRAYSIZE(client_id.address),
+					client_id.address
+				);
+				continue;
+			}
 		}
+
+		NetClientIDListNode *node = _AppendClientIDNode(
+			&server->p_client_ids,
+			_CreateClientIDNode(&client_id)
+		);
 
 		VERBOSE(
 			"connected: %llu, %.*s\n",
@@ -224,7 +267,7 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 
 	_CloseClientID(client_id);
 
-	free(node);
+	_FreeClientIDNode(node);
 
 	printf(
 		"No client has the id {socket=%llu, address=\"%.*s\"}, reason=%s",
@@ -648,6 +691,37 @@ inline void _CloseSocket(NetSocket socket) {
 	closesocket(socket);
 }
 
+inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id) {
+	NetClientIDListNode *node = malloc(sizeof(*node));
+
+	if (node == NULL)
+	{
+		exit(
+			_ReportError(
+				ENOMEM,
+
+				"failed to allocate a client id list node for client id: socket=%llu address=\"%.*s\"",
+
+				client_id->socket,
+
+				ARRAYSIZE(client_id->address),
+				client_id->address
+			)
+		);
+		return NULL;
+	}
+
+	node->client_id = *client_id;
+	node->inactivity_hits = 0;
+	node->_next = NULL;
+
+	return node;
+}
+
+inline void _FreeClientIDNode(NetClientIDListNode *node) {
+	free(node);
+}
+
 inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first, const NetClientID *client_id) {
 	NetClientIDListNode *last = NULL;
 	NetClientIDListNode *node = *p_first;
@@ -677,6 +751,33 @@ inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_fir
 	}
 
 	return NULL;
+}
+
+inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
+																								NetClientIDListNode *node) {
+
+	node->_next = NULL;
+
+	if (*p_first == NULL)
+	{
+		*p_first = node;
+		return node;
+	}
+
+	NetClientIDListNode *current_node = *p_first;
+
+	while (current_node)
+	{
+		if (current_node->_next == NULL)
+		{
+			current_node->_next = node;
+			break;
+		}
+
+		current_node = current_node->_next;
+	}
+
+	return node;
 }
 
 #pragma endregion
