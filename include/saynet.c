@@ -95,6 +95,8 @@ static inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode 
 static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 																											 NetClientIDListNode *node);
 
+static inline bool _IsRecvErrorMeanClientDisconnected(int error_code);
+
 static inline void *memclear(void *mem, size_t size) {
 	return memset(mem, 0, size);
 }
@@ -627,6 +629,11 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 			return EOK;
 		}
 
+		if (_IsRecvErrorMeanClientDisconnected(error))
+		{
+			*size = -1;
+		}
+
 		return _ReportError(
 			error,
 
@@ -801,6 +808,10 @@ inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 	}
 
 	return node;
+}
+
+inline bool _IsRecvErrorMeanClientDisconnected(int error_code) {
+	return error_code == WSAESHUTDOWN || error_code == WSAECONNRESET || error_code == WSAECONNABORTED;
 }
 
 #pragma endregion
