@@ -253,6 +253,7 @@ errno_t NetPollServer(NetServer *server) {
 				NetServerKickCLient(server, &node->client_id, "inactivity");
 			}
 
+			continue;
 		}
 		else
 		{
