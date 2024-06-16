@@ -12,6 +12,10 @@
 #define EOK 0
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
+
+
+#pragma region(defines)
+
 enum
 {
 	eSocketTCP = SOCK_STREAM,
@@ -30,21 +34,64 @@ typedef enum ConsoleColor
 
 static int _ConnectionProtocolToNative(NetConnectionProtocol proto);
 static int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
+static short _AddressTypeToNative(NetAddressType type);
+
+static int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
+static int _BindSocket(NetSocket socket, const NetConnectionParams *params);
+static int _SocketToListen(NetSocket socket);
+static int _MarkSocketNonBlocking(NetSocket socket);
 
 static int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
 
 static int _ReportError(int code, const char *format, ...);
 static void _PutColor(FILE *fp, ConsoleColor color);
 
-SAYNET_API errno_t NetStartServer(NetServer *server, const NetConnectionParams *params) {
+#pragma endregion
+
+
+
+#pragma region(lib funcs)
+
+errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
+	int result_code = 0;
+
+	result_code = _InitSocket(&client->socket, params);
+	ASSERT_CODE_RET(result_code);
+
+	return result_code;
+}
+
+errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	int result_code = 0;
 
 	result_code = _InitSocket(&server->socket, params);
 	ASSERT_CODE_RET(result_code);
 
 
+	result_code = _SocketToListen(server->socket);
+	ASSERT_CODE_RET(result_code);
 
 }
+
+errno_t NetCloseClient(NetClient *client, const NetConnectionParams *params) {
+	return EFAULT;
+}
+
+errno_t NetCloseServer(NetServer *server, const NetConnectionParams *params) {
+	return EFAULT;
+}
+
+errno_t NetPollClient(const NetClient *client) {
+	return EFAULT;
+}
+
+errno_t NetPollServer(const NetServer *server) {
+	return EFAULT;
+}
+
+#pragma endregion
+
+#pragma region(utility)
 
 int _ConnectionProtocolToNative(NetConnectionProtocol proto) {
 	switch (proto)
@@ -72,19 +119,137 @@ int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto) {
 	}
 }
 
-int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
+short _AddressTypeToNative(NetAddressType type) {
+	switch (type)
+	{
+	case eNAddrType_IP4:
+		return AF_INET;
+	case eNAddrType_IP6:
+		return AF_INET6;
+
+	default:
+		return 0;
+	}
+}
+
+int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	*pSocket = socket(
 		AF_UNSPEC,
 		_ConnectionProtocolToNative(params->connection_protocol),
 		_ConnectionProtocolToNativeIP(params->connection_protocol)
 	);
 
-	if (*socket == INVALID_SOCKET)
+	if (*pSocket == INVALID_SOCKET)
 	{
 		return _ReportError(WSAGetLastError(), "Failed to create a socket");
 	}
 
 	return EOK;
+}
+
+int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
+	const short native_addr_type = _AddressTypeToNative(params->address_type);
+	const NetPort net_port = htons(params->port);
+
+	int result_code = -1;
+
+	if (params->address_type == eNAddrType_IP4)
+	{
+		struct sockaddr_in address = {0};
+		address.sin_family = native_addr_type;
+		address.sin_port = net_port;
+
+		result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
+
+		if (result_code != EOK)
+		{
+			return _ReportError(
+				result_code,
+
+				"inet_pton(%d, \"%.*s\", %p) failed",
+				native_addr_type,
+
+				strnlen(params->address, ARRAYSIZE(params->address)),
+				params->address,
+
+				&address.sin_addr
+			);
+		}
+
+		result_code = bind(socket, (SOCKADDR *)&address, sizeof(address));
+	}
+	else if (params->address_type == eNAddrType_IP6)
+	{
+		struct sockaddr_in6 address6 = {0};
+		address6.sin6_family = native_addr_type;
+		address6.sin6_port = net_port;
+
+		result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
+
+		if (result_code != EOK)
+		{
+			return _ReportError(
+				result_code,
+
+				"inet_pton(%d, \"%.*s\", %p) failed",
+				native_addr_type,
+
+				strnlen(params->address, ARRAYSIZE(params->address)),
+				params->address,
+
+				&address6.sin6_addr
+			);
+		}
+
+		result_code = bind(socket, (SOCKADDR *)&address6, sizeof(address6));
+	}
+
+	if (result_code != EOK)
+	{
+		return _ReportError(
+			result_code,
+
+			"failed to bind socket %llu to \"%.*s\"",
+			socket,
+
+			strnlen(params->address, ARRAYSIZE(params->address)),
+			params->address
+		);
+	}
+
+	return 0;
+}
+
+int _SocketToListen(NetSocket socket) {
+	int result_code = listen(socket, SOMAXCONN);
+
+	if (result_code != EOK)
+	{
+		return _ReportError(
+			result_code,
+
+			"failed to make a socket (%llu) listen to connection",
+			socket
+		);
+	}
+
+	return result_code;
+}
+
+int _MarkSocketNonBlocking(NetSocket socket) {
+	return 0;
+}
+
+int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
+	int result_code = 0;
+
+	result_code = _CreateSocket(pSocket, params);
+	ASSERT_CODE_RET(result_code);
+
+	result_code = _BindSocket(*pSocket, params);
+	ASSERT_CODE_RET(result_code);
+
+	return result_code;
 }
 
 /// @returns any value passed in `code`
@@ -108,3 +273,4 @@ void _PutColor(FILE *fp, ConsoleColor color) {
 	fprintf(fp, "\033[%dm", color);
 }
 
+#pragma endregion
