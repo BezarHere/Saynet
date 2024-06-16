@@ -236,9 +236,13 @@ errno_t NetPollServer(NetServer *server) {
 		);
 	}
 
-	NetClientIDListNode *node = server->p_client_ids;
-	while (node != NULL)
+	NetClientIDListNode *current_node = server->p_client_ids;
+
+	while (current_node != NULL)
 	{
+		NetClientIDListNode *const node = current_node;
+		current_node = current_node->_next;
+
 		int size = (int)server->_handle->recv_buffer_sz;
 
 		int err_code = _RecvFromSocket(node->client_id.socket, server->_handle->recv_buffer, &size);
@@ -248,7 +252,7 @@ errno_t NetPollServer(NetServer *server) {
 		{
 			node->inactivity_hits++;
 
-			if (node->inactivity_hits >= MaxInactivityHits)
+			if (node->inactivity_hits >= MaxInactivityHits || size == -2)
 			{
 				NetServerKickCLient(server, &node->client_id, "inactivity");
 			}
@@ -622,6 +626,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 	if (result < 0)
 	{
 		const int error = WSAGetLastError();
+		const int original_size = *size;
 
 		// there is simply no data to receive
 		if (error == WSAEWOULDBLOCK)
@@ -632,7 +637,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 
 		if (_IsRecvErrorMeanClientDisconnected(error))
 		{
-			*size = -1;
+			*size = -2;
 		}
 
 		return _ReportError(
@@ -640,7 +645,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 
 			"failed to receive data to buffer [%p, len=%d] from socket %llu",
 			data,
-			*size,
+			original_size,
 			socket
 		);
 	}
@@ -774,7 +779,7 @@ inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_fir
 			}
 
 
-			break;
+			return node;
 		}
 
 		last = node;
