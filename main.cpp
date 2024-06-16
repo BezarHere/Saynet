@@ -57,6 +57,16 @@ int main() {
 
 		while (NetIsClientValid(&client))
 		{
+			std::string data{};
+			std::cin >> data;
+
+			if (!data.empty())
+			{
+				size_t size = data.size() + 1;
+				NetClientSend(&client, data.c_str(), &size);
+				std::cout << "sent " << size << " bytes!\n";
+			}
+
 			NetPollClient(&client);
 			Sleep(50);
 		}

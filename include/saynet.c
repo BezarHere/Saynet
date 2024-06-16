@@ -297,10 +297,13 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 	if (result == SOCKET_ERROR)
 	{
 		const int error = WSAGetLastError();
+		const size_t original_size = *size;
+
+		*size = 0;
 
 		if (_IsSocketDisconnectionError(error))
 		{
-
+			_AbortClient(client, "server disconnected");
 		}
 
 		return _ReportError(
@@ -334,8 +337,8 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 
 	_FreeClientIDNode(node);
 
-	printf(
-		"No client has the id {socket=%llu, address=\"%.*s\"}, reason=%s",
+	VERBOSE(
+		"removed client id {socket=%llu, address=\"%.*s\"}, reason=%s",
 		client_id->socket,
 		ARRAYSIZE(client_id->address),
 		client_id->address,
