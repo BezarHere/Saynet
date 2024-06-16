@@ -270,12 +270,11 @@ errno_t NetPollServer(NetServer *server) {
 
 			continue;
 		}
-		else
-		{
-			node->inactivity_hits = 0;
-		}
 
-		if (server->proc_client_recv)
+		node->inactivity_hits = 0;
+
+
+		if (size > 0 && server->proc_client_recv)
 		{
 			NetPacketData packet;
 
