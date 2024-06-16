@@ -292,7 +292,7 @@ errno_t NetPollServer(NetServer *server) {
 }
 
 errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
-	int result = send(client->socket, data, size, 0);
+	int result = send(client->socket, data, *size, 0);
 
 	if (result == SOCKET_ERROR)
 	{
