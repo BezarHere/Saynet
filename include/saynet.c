@@ -13,7 +13,6 @@
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
 
-
 #pragma region(defines)
 
 enum
@@ -32,23 +31,21 @@ typedef enum ConsoleColor
 	eFGClr_Blue = 34,
 } ConsoleColor;
 
-static int _ConnectionProtocolToNative(NetConnectionProtocol proto);
-static int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
-static short _AddressTypeToNative(NetAddressType type);
+static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
+static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
+static inline short _AddressTypeToNative(NetAddressType type);
 
-static int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
-static int _BindSocket(NetSocket socket, const NetConnectionParams *params);
-static int _SocketToListen(NetSocket socket);
-static int _MarkSocketNonBlocking(NetSocket socket);
+static inline int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
+static inline int _BindSocket(NetSocket socket, const NetConnectionParams *params);
+static inline int _SocketToListen(NetSocket socket);
+static inline int _MarkSocketNonBlocking(NetSocket socket);
 
-static int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
+static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
 
-static int _ReportError(int code, const char *format, ...);
-static void _PutColor(FILE *fp, ConsoleColor color);
+static inline int _ReportError(int code, const char *format, ...);
+static inline void _PutColor(FILE *fp, ConsoleColor color);
 
 #pragma endregion
-
-
 
 #pragma region(lib funcs)
 
@@ -237,7 +234,20 @@ int _SocketToListen(NetSocket socket) {
 }
 
 int _MarkSocketNonBlocking(NetSocket socket) {
-	return 0;
+	static const u_long mode = 1;
+	int result_code = ioctlsocket(socket, FIONBIO, &mode);
+
+	if (result_code != EOK)
+	{
+		return _ReportError(
+			result_code,
+
+			"marking the socket %llu as non-blocking failed",
+			socket
+		);
+	}
+
+	return EOK;
 }
 
 int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
@@ -247,6 +257,9 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	ASSERT_CODE_RET(result_code);
 
 	result_code = _BindSocket(*pSocket, params);
+	ASSERT_CODE_RET(result_code);
+
+	result_code = _MarkSocketNonBlocking(*pSocket);
 	ASSERT_CODE_RET(result_code);
 
 	return result_code;
