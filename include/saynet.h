@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 #define SAYNET_ENUM enum class
@@ -12,7 +13,7 @@
 // constants
 enum
 {
-	NetAddressBufferSize = 32
+	NetAddressBufferSize = 48 // for ipv4 & ipv6
 };
 
 typedef uint64_t NetSocket;
@@ -60,6 +61,7 @@ typedef struct NetConnectionParams
 	NetConnectionProtocol connection_protocol;
 
 	NetAddressType address_type;
+	// null terminated address, can be ipv4 (XX.XX.XX.XX) or ipv6 (NN:NN:...)
 	// setting all bytes to '0' will make saynet treat it as take any available address
 	NetAddressBuffer address;
 	NetPort port;
@@ -117,8 +119,24 @@ extern "C" {
 	SAYNET_API errno_t NetPollClient(NetClient *client);
 	SAYNET_API errno_t NetPollServer(NetServer *server);
 
+	/// @brief 
+	/// @param client 
+	/// @param data 
+	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
+	/// @return error if failed, zero at success
+	SAYNET_API errno_t NetClientSend(NetClient *client, const void *data, size_t *size);
+
 	// 'reason' is not owned by the function
 	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);
+
+
+	static inline bool NetIsClientValid(const NetClient *client) {
+		return client != NULL && client->_handle != NULL;
+	}
+
+	static inline bool NetIsServerValid(const NetServer *server) {
+		return server != NULL && server->_handle != NULL;
+	}
 
 #ifdef __cplusplus
 }

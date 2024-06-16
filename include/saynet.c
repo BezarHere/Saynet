@@ -71,6 +71,8 @@ static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *par
 static inline int _SocketConnect(NetSocket socket, const NetConnectionParams *params);
 static inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found);
 
+static inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out);
+
 // size is in/out
 static inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size);
 
@@ -82,6 +84,8 @@ static inline void _DestroyInternalData(NetInternalData *ptr);
 
 static inline void _CloseClientID(const NetClientID *client_id);
 static inline void _CloseSocket(NetSocket socket);
+
+static inline void _AbortClient(NetClient *client, const char *reason);
 
 static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
@@ -95,7 +99,7 @@ static inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode 
 static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 																											 NetClientIDListNode *node);
 
-static inline bool _IsRecvErrorMeanClientDisconnected(int error_code);
+static inline bool _IsSocketDisconnectionError(int error_code);
 
 static inline void *memclear(void *mem, size_t size) {
 	return memset(mem, 0, size);
@@ -114,7 +118,7 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	_DestroyInternalData(client->_handle);
 	client->_handle = _CreateInternalData();
 
-	result_code = _InitSocket(&client->socket, params);
+	result_code = _CreateSocket(&client->socket, params);
 	ASSERT_CODE_RET(result_code);
 
 	result_code = _SocketConnect(client->socket, params);
@@ -139,6 +143,12 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	result_code = _SocketToListen(server->socket);
 	ASSERT_CODE_RET(result_code);
 
+	NetAddressBuffer buffer = {0};
+
+	_GetSocketAddr(server->socket, &buffer);
+
+	printf("server hosted at %s\n", buffer);
+
 	return result_code;
 }
 
@@ -147,6 +157,7 @@ errno_t NetCloseClient(NetClient *client) {
 	client->_handle = NULL;
 
 	_CloseSocket(client->socket);
+	client->socket = INVALID_SOCKET;
 
 	return _StopNetService();
 }
@@ -276,6 +287,29 @@ errno_t NetPollServer(NetServer *server) {
 				packet
 			);
 		}
+	}
+
+	return EOK;
+}
+
+errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
+	int result = send(client->socket, data, size, 0);
+
+	if (result == SOCKET_ERROR)
+	{
+		const int error = WSAGetLastError();
+
+		if (_IsSocketDisconnectionError(error))
+		{
+
+		}
+
+		return _ReportError(
+			error,
+
+			"client failed to send buffer %p, length %llu bytes in socket %llu",
+			data, *size, client->socket
+		);
 	}
 
 	return EOK;
@@ -603,19 +637,64 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 
 	*found = true;
 
-	printf("accepted address %.*s", strnlen(addr.sa_data, ARRAYSIZE(addr.sa_data)), addr.sa_data);
+
 
 	client_id->socket = new_socket;
 	client_id->address_type = _NativeToAddressType(addr.sa_family);
 
-	memcpy(
+	// clear address representation
+	memclear(client_id->address, ARRAYSIZE(client_id->address));
+
+	inet_ntop(
+		addr.sa_family,
+		&addr,
 		client_id->address,
-		addr.sa_data,
-		min(
-			addr_len,
-			ARRAYSIZE(client_id->address)
-		)
+		ARRAYSIZE(client_id->address)
 	);
+
+	// to make sure, set the last char to a null termination
+	client_id->address[ARRAYSIZE(client_id->address) - 1] = 0;
+
+	VERBOSE("accepted address %s", client_id->address);
+
+	return EOK;
+}
+
+inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out) {
+	memclear(address_out, ARRAYSIZE(*address_out));
+
+	SOCKADDR addr = {0};
+	int length = sizeof(addr);
+
+	int result = getsockname(socket, &addr, &length);
+
+	if (result != EOK)
+	{
+		return _ReportError(
+			WSAGetLastError(),
+
+			"failed to get the socket address of socket %llu",
+			socket
+		);
+	}
+
+	const int address_family = AF_INET;
+
+	//
+	result = inet_ntop(address_family, &addr, *address_out, ARRAYSIZE(*address_out));
+
+	if (result != 1)
+	{
+		return _ReportError(
+			WSAGetLastError(),
+
+			"while getting socket address: inet_ntop(%d, %p, %p, %llu) failed",
+			address_family,
+			&addr,
+			*address_out,
+			ARRAYSIZE(*address_out)
+		);
+	}
 
 	return EOK;
 }
@@ -635,7 +714,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 			return EOK;
 		}
 
-		if (_IsRecvErrorMeanClientDisconnected(error))
+		if (_IsSocketDisconnectionError(error))
 		{
 			*size = -2;
 		}
@@ -727,6 +806,12 @@ inline void _CloseSocket(NetSocket socket) {
 	closesocket(socket);
 }
 
+inline void _AbortClient(NetClient *client, const char *reason) {
+	// TODO: colorize/use colorized print function to something like YELLOW
+	_ReportError(E_ABORT, "client: connection aborted: reason=\"%s\"\n", reason);
+	NetCloseClient(client);
+}
+
 inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id) {
 	NetClientIDListNode *node = malloc(sizeof(*node));
 
@@ -816,7 +901,7 @@ inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 	return node;
 }
 
-inline bool _IsRecvErrorMeanClientDisconnected(int error_code) {
+inline bool _IsSocketDisconnectionError(int error_code) {
 	return error_code == WSAESHUTDOWN || error_code == WSAECONNRESET || error_code == WSAECONNABORTED;
 }
 
