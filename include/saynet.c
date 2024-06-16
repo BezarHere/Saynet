@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -12,6 +13,8 @@
 #define EOK 0
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
+#define VERBOSE(...) printf(__VA_ARGS__)
+
 
 #pragma region(defines)
 
@@ -19,6 +22,11 @@ enum
 {
 	eSocketTCP = SOCK_STREAM,
 	eSocketUDB = SOCK_DGRAM,
+};
+
+enum
+{
+	DefaultRecvBufferSz = 0x10000
 };
 
 typedef enum ConsoleColor
@@ -31,9 +39,18 @@ typedef enum ConsoleColor
 	eFGClr_Blue = 34,
 } ConsoleColor;
 
+typedef struct NetInternalData
+{
+	size_t recv_buffer_sz;
+	uint8_t *recv_buffer;
+
+
+} NetInternalData;
+
 static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 static inline short _AddressTypeToNative(NetAddressType type);
+static inline NetAddressType _NativeToAddressType(short type);
 
 static inline int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
 static inline int _BindSocket(NetSocket socket, const NetConnectionParams *params);
@@ -42,8 +59,16 @@ static inline int _MarkSocketNonBlocking(NetSocket socket);
 
 static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
 
+static inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found);
+
+// size is in/out
+static inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size);
+
 static inline int _ReportError(int code, const char *format, ...);
 static inline void _PutColor(FILE *fp, ConsoleColor color);
+
+static inline NetInternalData *_CreateInternalData();
+static inline void _DestroyInternalData(NetInternalData *ptr);
 
 #pragma endregion
 
@@ -51,6 +76,10 @@ static inline void _PutColor(FILE *fp, ConsoleColor color);
 
 errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	int result_code = 0;
+
+	_DestroyInternalData(client->_handle);
+	client->_handle = _CreateInternalData();
+
 
 	result_code = _InitSocket(&client->socket, params);
 	ASSERT_CODE_RET(result_code);
@@ -61,6 +90,10 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	int result_code = 0;
 
+	_DestroyInternalData(server->_handle);
+	server->_handle = _CreateInternalData();
+
+
 	result_code = _InitSocket(&server->socket, params);
 	ASSERT_CODE_RET(result_code);
 
@@ -68,7 +101,6 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	result_code = _SocketToListen(server->socket);
 	ASSERT_CODE_RET(result_code);
 
-	SOCKADDR wd;
 
 }
 
@@ -85,7 +117,72 @@ errno_t NetPollClient(const NetClient *client) {
 }
 
 errno_t NetPollServer(const NetServer *server) {
-	return EFAULT;
+	while (true)
+	{
+		bool found = false;
+		NetClientID client_id = {0};
+
+		int result = _SocketAcceptConn(server->socket, &client_id, &found);
+
+		if (result != EOK || !found)
+		{
+			break;
+		}
+
+		if (server->proc_client_joined)
+		{
+			int result = server->proc_client_joined(&client_id);
+		}
+
+		VERBOSE(
+			"connected: %llu, %.*s\n",
+			client_id.socket,
+			ARRAYSIZE(client_id.address),
+			client_id.address
+		);
+	}
+
+	// not dealing with overflows in casts (int <-> size_t)
+	if (server->_handle->recv_buffer_sz >= INT32_MAX)
+	{
+		return _ReportError(
+			E2BIG,
+
+			"server receive buffer is too big, buffer size is %llu bytes, max size is %d bytes",
+			server->_handle->recv_buffer_sz, INT32_MAX
+		);
+	}
+
+	NetClientIDListNode *node = server->p_client_ids;
+	while (node != NULL)
+	{
+		int size = (int)server->_handle->recv_buffer_sz;
+
+		int err_code = _RecvFromSocket(node->client_id.socket, server->_handle->recv_buffer, &size);
+
+		// socket didn't send anything (or atleast we didn't receive anything from it)
+		if (size < 0)
+		{
+			node->inactivity_hits++;
+		}
+		else
+		{
+			node->inactivity_hits = 0;
+		}
+
+		if (server->proc_client_recv)
+		{
+			NetPacketData packet;
+
+			packet.data = server->_handle->recv_buffer;
+			packet.size = size;
+
+			server->proc_client_recv(
+				&node->client_id,
+				packet
+			);
+		}
+	}
 }
 
 #pragma endregion
@@ -128,6 +225,20 @@ short _AddressTypeToNative(NetAddressType type) {
 
 	default:
 		return 0;
+	}
+}
+
+inline NetAddressType _NativeToAddressType(short type) {
+	switch (type)
+	{
+	case AF_INET:
+		return eNAddrType_IP4;
+	case AF_INET6:
+		return eNAddrType_IP6;
+
+	default:
+		// TODO: report an error?
+		return eNAddrType_IP4;
 	}
 }
 
@@ -267,6 +378,85 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	return result_code;
 }
 
+inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found) {
+	SOCKADDR addr = {0};
+	int addr_len = sizeof(addr);
+
+	const NetSocket new_socket = accept(socket, &addr, &addr_len);
+
+	if (new_socket == INVALID_SOCKET)
+	{
+		*found = false;
+
+		int error = WSAGetLastError();
+		if (error == WSAEWOULDBLOCK)
+		{
+			return EOK;
+		}
+
+		return _ReportError(
+			error,
+
+			"something happened while accepting connections to socket %llu",
+			socket
+		);
+	}
+
+	*found = true;
+
+	printf("accepted address %.*s", strnlen(addr.sa_data, ARRAYSIZE(addr.sa_data)), addr.sa_data);
+
+	client_id->socket = new_socket;
+	client_id->address_type = _NativeToAddressType(addr.sa_family);
+
+	memcpy(
+		client_id->address,
+		addr.sa_data,
+		min(
+			addr_len,
+			ARRAYSIZE(client_id->address)
+		)
+	);
+
+	return EOK;
+}
+
+inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
+	const int result = recv(socket, data, *size, 0);
+
+	if (result < 0)
+	{
+		const int error = WSAGetLastError();
+
+		// there is simply no data to receive
+		if (error == WSAEWOULDBLOCK)
+		{
+			*size = 0;
+			return EOK;
+		}
+
+		return _ReportError(
+			error,
+
+			"failed to receive data to buffer [%p, len=%d] from socket %llu",
+			data,
+			*size,
+			socket
+		);
+	}
+
+	if (result == 0)
+	{
+		*size = -1;
+	}
+	else
+	{
+		*size = result;
+	}
+
+	return EOK;
+}
+
 /// @returns any value passed in `code`
 int _ReportError(int code, const char *format, ...) {
 
@@ -286,6 +476,40 @@ int _ReportError(int code, const char *format, ...) {
 
 void _PutColor(FILE *fp, ConsoleColor color) {
 	fprintf(fp, "\033[%dm", color);
+}
+
+inline NetInternalData *_CreateInternalData() {
+	NetInternalData *data = malloc(sizeof(*data));
+	if (data == NULL)
+	{
+		_ReportError(ENOMEM, "failed to allocate internal data");
+		exit(ENOMEM);
+		return NULL;
+	}
+
+	data->recv_buffer_sz = DefaultRecvBufferSz;
+	data->recv_buffer = malloc(data->recv_buffer_sz);
+
+	if (data->recv_buffer == NULL)
+	{
+		_ReportError(ENOMEM, "failed to allocate recv buffer: size=%llu bytes", data->recv_buffer_sz);
+		exit(ENOMEM);
+		return NULL;
+	}
+
+	memclear(data->recv_buffer, data->recv_buffer_sz);
+
+	return data;
+}
+
+inline void _DestroyInternalData(NetInternalData *ptr) {
+	if (ptr == NULL)
+	{
+		return;
+	}
+
+	free(ptr->recv_buffer);
+	free(ptr);
 }
 
 #pragma endregion

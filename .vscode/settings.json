@@ -3,6 +3,7 @@
 		"ARRAYSIZE",
 		"endregion",
 		"ioctlsocket",
+		"memclear",
 		"SAYNET"
 	]
 }

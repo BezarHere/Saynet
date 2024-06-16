@@ -18,8 +18,6 @@ enum
 typedef uint64_t NetSocket;
 typedef uint16_t NetPort;
 
-typedef struct NetObjectData *NetLibraryHandle;
-
 typedef char NetChar;
 
 typedef struct NetPacketData
@@ -75,19 +73,33 @@ typedef struct NetClientID
 	NetAddressBuffer address;
 } NetClientID;
 
+typedef struct NetClientIDListNode
+{
+	NetClientID client_id;
+	uint32_t inactivity_hits;
+
+	struct _NetClientIDListNode *_next;
+} NetClientIDListNode;
+
+typedef struct NetInternalData *NetInternalHandle;
 
 typedef struct NetClient
 {
 	NetSocket socket;
 
-	NetLibraryHandle _handle;
+	NetInternalHandle _handle;
 } NetClient;
 
 typedef struct NetServer
 {
 	NetSocket socket;
 
-	NetLibraryHandle _handle;
+	NetClientJoinedProc proc_client_joined;
+	NetClientRecvProc proc_client_recv;
+
+	NetClientIDListNode *p_client_ids;
+
+	NetInternalHandle _handle;
 } NetServer;
 
 
