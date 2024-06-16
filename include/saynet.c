@@ -61,6 +61,9 @@ static WSADATA g_wsa;
 static inline int _StartNetService();
 static inline int _StopNetService();
 
+static inline errno_t _PollServerUDP(NetServer *server);
+static inline errno_t _PollServerTCP(NetServer *server);
+
 static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 static inline short _AddressTypeToNative(NetAddressType type);
@@ -221,59 +224,6 @@ errno_t NetPollServer(NetServer *server) {
 		return EINVAL;
 	}
 
-	// no need to poll if we aren't tcp
-	if (server->_handle->connection_params.connection_protocol != eNConnectProto_TCP)
-	{
-		return EOK;
-	}
-
-	while (true)
-	{
-		bool found = false;
-		NetClientID client_id = {0};
-
-		int result = _SocketAcceptConn(server->socket, &client_id, &found);
-
-		if (result != EOK || !found)
-		{
-			break;
-		}
-
-		if (server->proc_client_joined)
-		{
-			int result = server->proc_client_joined(&client_id);
-
-			// user returned an error code while processing the new client, kick him
-			if (result)
-			{
-				_CloseClientID(&client_id);
-				VERBOSE(
-					"kicked client {socket=%llu, address=%.*s}, server code=%d",
-					client_id.socket,
-
-					ARRAYSIZE(client_id.address),
-					client_id.address,
-
-					result
-				);
-				continue;
-			}
-		}
-
-		NetClientIDListNode *node = _AppendClientIDNode(
-			&server->p_client_ids,
-			_CreateClientIDNode(&client_id)
-		);
-
-		VERBOSE(
-			"connected: %llu, %.*s\n",
-			client_id.socket,
-
-			ARRAYSIZE(client_id.address),
-			client_id.address
-		);
-	}
-
 	// not dealing with overflows in casts (int <-> size_t)
 	if (server->_handle->recv_buffer_sz >= INT32_MAX)
 	{
@@ -285,48 +235,12 @@ errno_t NetPollServer(NetServer *server) {
 		);
 	}
 
-	NetClientIDListNode *current_node = server->p_client_ids;
-
-	while (current_node != NULL)
+	if (server->_handle->connection_params.connection_protocol != eNConnectProto_TCP)
 	{
-		NetClientIDListNode *const node = current_node;
-		current_node = current_node->_next;
-
-		int size = (int)server->_handle->recv_buffer_sz;
-
-		int err_code = _RecvFromSocket(node->client_id.socket, server->_handle->recv_buffer, &size);
-
-		// socket didn't send anything (or atleast we didn't receive anything from it)
-		if (size < 0)
-		{
-			node->inactivity_hits++;
-
-			if (node->inactivity_hits >= MaxInactivityHits || size == -2)
-			{
-				NetServerKickCLient(server, &node->client_id, "inactivity");
-			}
-
-			continue;
-		}
-
-		node->inactivity_hits = 0;
-
-
-		if (size > 0 && server->proc_client_recv)
-		{
-			NetPacketData packet;
-
-			packet.data = server->_handle->recv_buffer;
-			packet.size = size;
-
-			server->proc_client_recv(
-				&node->client_id,
-				packet
-			);
-		}
+		return _PollServerUDP(server);
 	}
 
-	return EOK;
+	return _PollServerTCP(server);
 }
 
 errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
@@ -415,6 +329,140 @@ inline int _StopNetService() {
 
 			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
 		);
+	}
+
+	return EOK;
+}
+
+inline errno_t _PollServerUDP(NetServer *server) {
+	while (true)
+	{
+		NetAddressBuffer address_buffer = {0};
+
+		int size = (int)server->_handle->recv_buffer_sz;
+
+		int result_code = _RecvAnyUDP(
+			server->socket,
+
+			server->_handle->recv_buffer,
+			&size,
+
+			server->_handle->connection_params.address_type,
+			&address_buffer
+		);
+
+		// server's socket has shutdown/closed prior to recv
+		if (size == 0)
+		{
+			break;
+		}
+
+		if (result_code != EOK)
+		{
+			// unrecoverable error, stop receiving
+			if (size == -2)
+			{
+				_AbortServer(server, "hard error");
+				break;
+			}
+
+			// _RecvAnyUDP should have reported something, skip to next iteration
+			continue;
+		}
+
+	}
+
+	return EOK;
+}
+
+inline errno_t _PollServerTCP(NetServer *server) {
+
+	while (true)
+	{
+		bool found = false;
+		NetClientID client_id = {0};
+
+		int result = _SocketAcceptConn(server->socket, &client_id, &found);
+
+		if (result != EOK || !found)
+		{
+			break;
+		}
+
+		if (server->proc_client_joined)
+		{
+			int result = server->proc_client_joined(&client_id);
+
+			// user returned an error code while processing the new client, kick him
+			if (result)
+			{
+				_CloseClientID(&client_id);
+				VERBOSE(
+					"kicked client {socket=%llu, address=%.*s}, server code=%d",
+					client_id.socket,
+
+					ARRAYSIZE(client_id.address),
+					client_id.address,
+
+					result
+				);
+				continue;
+			}
+		}
+
+		NetClientIDListNode *node = _AppendClientIDNode(
+			&server->p_client_ids,
+			_CreateClientIDNode(&client_id)
+		);
+
+		VERBOSE(
+			"connected: %llu, %.*s\n",
+			client_id.socket,
+
+			ARRAYSIZE(client_id.address),
+			client_id.address
+		);
+	}
+
+	NetClientIDListNode *current_node = server->p_client_ids;
+
+	while (current_node != NULL)
+	{
+		NetClientIDListNode *const node = current_node;
+		current_node = current_node->_next;
+
+		int size = (int)server->_handle->recv_buffer_sz;
+
+		int err_code = _RecvFromSocket(node->client_id.socket, server->_handle->recv_buffer, &size);
+
+		// socket didn't send anything (or atleast we didn't receive anything from it)
+		if (size < 0)
+		{
+			node->inactivity_hits++;
+
+			if (node->inactivity_hits >= MaxInactivityHits || size == -2)
+			{
+				NetServerKickCLient(server, &node->client_id, "inactivity");
+			}
+
+			continue;
+		}
+
+		node->inactivity_hits = 0;
+
+
+		if (size > 0 && server->proc_client_recv)
+		{
+			NetPacketData packet;
+
+			packet.data = server->_handle->recv_buffer;
+			packet.size = size;
+
+			server->proc_client_recv(
+				&node->client_id,
+				packet
+			);
+		}
 	}
 
 	return EOK;
@@ -802,10 +850,17 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
 		{
 			const int error = WSAGetLastError();
 
+			// unrecoverable error
 			if (_IsSocketDisconnectionError(error))
 			{
 				*size = -2;
 			}
+			// no more stuff to receive (socket tried to block to get more)
+			else if (error == WSAEWOULDBLOCK)
+			{
+				*size = 0;
+			}
+			// average error
 			else
 			{
 				*size = -1;
