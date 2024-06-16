@@ -394,8 +394,14 @@ inline NetAddressType _NativeToAddressType(short type) {
 
 inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 													 const CallUseAddressProc proc, const char *context) {
+	enum
+	{
+		INetPToN_Success = 1
+	};
 	const short native_addr_type = _AddressTypeToNative(params->address_type);
 	const NetPort net_port = htons(params->port);
+
+	const bool any_address = (params->address[0] == 0);
 
 	int result_code = -1;
 
@@ -405,9 +411,17 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 		address.sin_family = native_addr_type;
 		address.sin_port = net_port;
 
-		result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
+		if (any_address)
+		{
+			address.sin_addr = (struct in_addr){0};
+			result_code = INetPToN_Success;
+		}
+		else
+		{
+			result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
+		}
 
-		if (result_code != 1)
+		if (result_code != INetPToN_Success)
 		{
 			result_code = WSAGetLastError();
 			return _ReportError(
@@ -433,9 +447,17 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 		address6.sin6_family = native_addr_type;
 		address6.sin6_port = net_port;
 
-		result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
+		if (any_address)
+		{
+			address6.sin6_addr = (struct in6_addr){0};
+			result_code = INetPToN_Success;
+		}
+		else
+		{
+			result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
+		}
 
-		if (result_code != 1)
+		if (result_code != INetPToN_Success)
 		{
 			result_code = WSAGetLastError();
 			return _ReportError(

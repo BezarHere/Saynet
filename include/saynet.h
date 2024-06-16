@@ -60,6 +60,7 @@ typedef struct NetConnectionParams
 	NetConnectionProtocol connection_protocol;
 
 	NetAddressType address_type;
+	// setting all bytes to '0' will make saynet treat it as take any available address
 	NetAddressBuffer address;
 	NetPort port;
 
