@@ -113,8 +113,8 @@ extern "C" {
 	SAYNET_API errno_t NetCloseClient(NetClient *client);
 	SAYNET_API errno_t NetCloseServer(NetServer *server);
 
-	SAYNET_API errno_t NetPollClient(const NetClient *client);
-	SAYNET_API errno_t NetPollServer(const NetServer *server);
+	SAYNET_API errno_t NetPollClient(NetClient *client);
+	SAYNET_API errno_t NetPollServer(NetServer *server);
 
 	// 'reason' is not owned by the function
 	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);

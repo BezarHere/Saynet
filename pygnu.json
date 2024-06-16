@@ -26,7 +26,7 @@
             "simd_type": "sse",
             "include_dirs": [],
             "lib_dirs": [],
-            "lib_names": [],
+            "lib_names": ["Ws2_32"],
             "assembler_args": [],
             "linker_args": [],
             "preprocessor_args": []

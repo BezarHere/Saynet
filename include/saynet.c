@@ -8,7 +8,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#pragma comment(lib, "Ws2_32")
+// #pragma comment(lib, "Ws2_32.lib")
 
 #define EOK 0
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
@@ -45,6 +45,11 @@ typedef struct NetInternalData
 	size_t recv_buffer_sz;
 	uint8_t *recv_buffer;
 } NetInternalData;
+
+static WSADATA g_wsa;
+
+static inline int _StartNetService();
+static inline int _StopNetService();
 
 static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
@@ -85,6 +90,10 @@ static inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode 
 static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 																											 NetClientIDListNode *node);
 
+static inline void *memclear(void *mem, size_t size) {
+	return memset(mem, 0, size);
+}
+
 #pragma endregion
 
 #pragma region(lib funcs)
@@ -92,13 +101,16 @@ static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_f
 errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	int result_code = 0;
 
+	result_code = _StartNetService();
+	ASSERT_CODE_RET(result_code);
+
 	_DestroyInternalData(client->_handle);
 	client->_handle = _CreateInternalData();
 
 	result_code = _InitSocket(&client->socket, params);
 	ASSERT_CODE_RET(result_code);
 
-	result_code = _SocketConnect(&client->socket, params);
+	result_code = _SocketConnect(client->socket, params);
 	ASSERT_CODE_RET(result_code);
 
 	return result_code;
@@ -110,6 +122,8 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	_DestroyInternalData(server->_handle);
 	server->_handle = _CreateInternalData();
 
+	result_code = _StartNetService();
+	ASSERT_CODE_RET(result_code);
 
 	result_code = _InitSocket(&server->socket, params);
 	ASSERT_CODE_RET(result_code);
@@ -118,7 +132,7 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	result_code = _SocketToListen(server->socket);
 	ASSERT_CODE_RET(result_code);
 
-
+	return result_code;
 }
 
 errno_t NetCloseClient(NetClient *client) {
@@ -127,7 +141,7 @@ errno_t NetCloseClient(NetClient *client) {
 
 	_CloseSocket(client->socket);
 
-	return EOK;
+	return _StopNetService();
 }
 
 errno_t NetCloseServer(NetServer *server) {
@@ -149,14 +163,14 @@ errno_t NetCloseServer(NetServer *server) {
 
 	}
 
+	return _StopNetService();
+}
+
+errno_t NetPollClient(NetClient *client) {
 	return EFAULT;
 }
 
-errno_t NetPollClient(const NetClient *client) {
-	return EFAULT;
-}
-
-errno_t NetPollServer(const NetServer *server) {
+errno_t NetPollServer(NetServer *server) {
 	while (true)
 	{
 		bool found = false;
@@ -180,8 +194,11 @@ errno_t NetPollServer(const NetServer *server) {
 				VERBOSE(
 					"kicked client {socket=%llu, address=%.*s}, server code=%d",
 					client_id.socket,
+
 					ARRAYSIZE(client_id.address),
-					client_id.address
+					client_id.address,
+
+					result
 				);
 				continue;
 			}
@@ -195,6 +212,7 @@ errno_t NetPollServer(const NetServer *server) {
 		VERBOSE(
 			"connected: %llu, %.*s\n",
 			client_id.socket,
+
 			ARRAYSIZE(client_id.address),
 			client_id.address
 		);
@@ -225,7 +243,7 @@ errno_t NetPollServer(const NetServer *server) {
 
 			if (node->inactivity_hits >= MaxInactivityHits)
 			{
-				NetServerKickCLient(server, node, "inactivity");
+				NetServerKickCLient(server, &node->client_id, "inactivity");
 			}
 
 		}
@@ -247,6 +265,8 @@ errno_t NetPollServer(const NetServer *server) {
 			);
 		}
 	}
+
+	return EOK;
 }
 
 errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason) {
@@ -283,6 +303,36 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 #pragma endregion
 
 #pragma region(utility)
+
+inline int _StartNetService() {
+	int result = WSAStartup(MAKEWORD(2, 2), &g_wsa);
+
+	if (result != EOK)
+	{
+		return _ReportError(
+			result,
+
+			"wsa startup failed, net service can't be run"
+		);
+	}
+
+	return EOK;
+}
+
+inline int _StopNetService() {
+	int result = WSACleanup();
+
+	if (result != EOK)
+	{
+		return _ReportError(
+			result,
+
+			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
+		);
+	}
+
+	return EOK;
+}
 
 int _ConnectionProtocolToNative(NetConnectionProtocol proto) {
 	switch (proto)
@@ -443,7 +493,9 @@ int _SocketToListen(NetSocket socket) {
 
 int _MarkSocketNonBlocking(NetSocket socket) {
 	static const u_long mode = 1;
-	int result_code = ioctlsocket(socket, FIONBIO, &mode);
+
+	// yes, i meant to cast the const away; check ioctlsocket declaration
+	int result_code = ioctlsocket(socket, FIONBIO, (u_long *)&mode);
 
 	if (result_code != EOK)
 	{
@@ -591,7 +643,7 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 }
 
 inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
-	const int result = recv(socket, data, *size, 0);
+	const int result = recv(socket, (char *)data, *size, 0);
 
 	if (result < 0)
 	{
