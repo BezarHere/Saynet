@@ -682,21 +682,20 @@ inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out) {
 
 	const int address_family = AF_INET;
 
-	//
-	result = inet_ntop(address_family, &addr, *address_out, ARRAYSIZE(*address_out));
+	inet_ntop(address_family, &addr, *address_out, ARRAYSIZE(*address_out));
 
-	if (result != 1)
-	{
-		return _ReportError(
-			WSAGetLastError(),
+	// if (result != 1)
+	// {
+	// 	return _ReportError(
+	// 		WSAGetLastError(),
 
-			"while getting socket address: inet_ntop(%d, %p, %p, %llu) failed",
-			address_family,
-			&addr,
-			*address_out,
-			ARRAYSIZE(*address_out)
-		);
-	}
+	// 		"while getting socket address: inet_ntop(%d, %p, %p, %llu) failed",
+	// 		address_family,
+	// 		&addr,
+	// 		*address_out,
+	// 		ARRAYSIZE(*address_out)
+	// 	);
+	// }
 
 	return EOK;
 }
