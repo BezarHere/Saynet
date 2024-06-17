@@ -69,6 +69,11 @@ typedef struct NetConnectionParams
 
 } NetConnectionParams;
 
+typedef struct NetAddress
+{
+	NetAddressType type;
+	NetAddressBuffer name;
+} NetAddress;
 
 typedef struct NetClientID
 {
@@ -91,7 +96,7 @@ typedef struct NetClient
 {
 	NetSocket socket;
 
-	NetInternalHandle _handle;
+	NetInternalHandle _internal;
 } NetClient;
 
 typedef struct NetServer
@@ -103,7 +108,7 @@ typedef struct NetServer
 
 	NetClientIDListNode *p_client_ids;
 
-	NetInternalHandle _handle;
+	NetInternalHandle _internal;
 } NetServer;
 
 
@@ -120,6 +125,15 @@ extern "C" {
 	SAYNET_API errno_t NetPollClient(NetClient *client);
 	SAYNET_API errno_t NetPollServer(NetServer *server);
 
+	SAYNET_API const NetConnectionParams *NetClientGetConnectionParams(const NetClient *client);
+	SAYNET_API const NetConnectionParams *NetServerGetConnectionParams(const NetServer *server);
+
+	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
+	/// @return error if failed, zero at success
+	SAYNET_API errno_t NetClientSendToUDP(NetClient *client,
+																		 const void *data, size_t *size,
+																		 const NetAddress *address);
+
 	/// @brief 
 	/// @param client 
 	/// @param data 
@@ -132,13 +146,13 @@ extern "C" {
 
 
 	static inline bool NetIsClientValid(const NetClient *client) {
-		return client != NULL && client->_handle != NULL;
+		return client != NULL && client->_internal != NULL;
 	}
 
 	static inline bool NetIsServerValid(const NetServer *server) {
-		return server != NULL && server->_handle != NULL;
+		return server != NULL && server->_internal != NULL;
 	}
 
 #ifdef __cplusplus
-}
+	}
 #endif

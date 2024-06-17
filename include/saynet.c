@@ -24,6 +24,26 @@
 
 #pragma region(defines)
 
+typedef struct InAddress
+{
+	union _InAddress_data
+	{
+		IN_ADDR ipv4;
+		IN6_ADDR ipv6;
+	} data;
+	int length;
+} InAddress;
+
+typedef struct SockInAddress
+{
+	union _SockInAddress_data
+	{
+		SOCKADDR_IN addr;
+		SOCKADDR_IN6 addr6;
+	} data;
+	int length;
+} SockInAddress;
+
 enum
 {
 	eSocketTCP = SOCK_STREAM,
@@ -103,11 +123,15 @@ static inline void _DestroyInternalData(NetInternalData *ptr);
 static inline void _CloseClientID(const NetClientID *client_id);
 static inline void _CloseSocket(NetSocket socket);
 
+static inline void _AbortServer(NetServer *server, const char *reason);
 static inline void _AbortClient(NetClient *client, const char *reason);
 
 static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
 
+static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
+static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
+																								 SockInAddress *output);
 
 // removes it from the linked list and returns it
 // returns null if no match can be found
@@ -133,9 +157,9 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 
 	client->socket = INVALID_SOCKET;
 
-	_DestroyInternalData(client->_handle);
-	client->_handle = _CreateInternalData();
-	client->_handle->connection_params = *params;
+	_DestroyInternalData(client->_internal);
+	client->_internal = _CreateInternalData();
+	client->_internal->connection_params = *params;
 
 	result_code = _StartNetService();
 	ASSERT_CLIENT_CREATION(result_code);
@@ -157,9 +181,9 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 
 	server->socket = INVALID_SOCKET;
 
-	_DestroyInternalData(server->_handle);
-	server->_handle = _CreateInternalData();
-	server->_handle->connection_params = *params;
+	_DestroyInternalData(server->_internal);
+	server->_internal = _CreateInternalData();
+	server->_internal->connection_params = *params;
 
 	result_code = _StartNetService();
 	ASSERT_SERVER_CREATION(result_code);
@@ -183,8 +207,8 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 }
 
 errno_t NetCloseClient(NetClient *client) {
-	_DestroyInternalData(client->_handle);
-	client->_handle = NULL;
+	_DestroyInternalData(client->_internal);
+	client->_internal = NULL;
 
 	_CloseSocket(client->socket);
 	client->socket = INVALID_SOCKET;
@@ -193,7 +217,7 @@ errno_t NetCloseClient(NetClient *client) {
 }
 
 errno_t NetCloseServer(NetServer *server) {
-	_DestroyInternalData(server->_handle);
+	_DestroyInternalData(server->_internal);
 
 	{
 		NetClientIDListNode *node = server->p_client_ids;
@@ -225,17 +249,17 @@ errno_t NetPollServer(NetServer *server) {
 	}
 
 	// not dealing with overflows in casts (int <-> size_t)
-	if (server->_handle->recv_buffer_sz >= INT32_MAX)
+	if (server->_internal->recv_buffer_sz >= INT32_MAX)
 	{
 		return _ReportError(
 			E2BIG,
 
 			"server receive buffer is too big, buffer size is %llu bytes, max size is %d bytes",
-			server->_handle->recv_buffer_sz, INT32_MAX
+			server->_internal->recv_buffer_sz, INT32_MAX
 		);
 	}
 
-	if (server->_handle->connection_params.connection_protocol != eNConnectProto_TCP)
+	if (server->_internal->connection_params.connection_protocol != eNConnectProto_TCP)
 	{
 		return _PollServerUDP(server);
 	}
@@ -243,8 +267,61 @@ errno_t NetPollServer(NetServer *server) {
 	return _PollServerTCP(server);
 }
 
+const NetConnectionParams *NetClientGetConnectionParams(const NetClient *client) {
+	return &client->_internal->connection_params;
+}
+
+const NetConnectionParams *NetServerGetConnectionParams(const NetServer *server) {
+	return &server->_internal->connection_params;
+}
+
+errno_t NetClientSendToUDP(NetClient *client,
+													 const void *data, size_t *size,
+													 const NetAddress *address) {
+	SockInAddress sock_addr = {0};
+
+	// TODO: check return code
+	_ConvertNetAddressToSockInAddr(address, client->_internal->connection_params.port, &sock_addr);
+
+
+	int result_code = sendto(
+		client->socket,
+		(const char *)data,
+		// FIXME: this will overflow! check for overflow later
+		*size,
+		0,
+		(const SOCKADDR *)&sock_addr.data,
+		sock_addr.length
+	);
+
+	if (result_code <= -1)
+	{
+		const int error = WSAGetLastError();
+		const size_t original_size = *size;
+
+		*size = 0;
+
+		if (_IsSocketDisconnectionError(error))
+		{
+			_AbortClient(client, "hard error");
+		}
+
+		return _ReportError(
+			error,
+
+			"client failed to send (UDP) buffer %p, length %llu bytes in socket %llu to %s",
+			data, original_size, client->socket, address->name
+		);
+	}
+
+	*size = result_code;
+
+	return result_code;
+}
+
 errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
-	int result = send(client->socket, data, *size, 0);
+	// FIXME: this will overflow! check for overflow later
+	int result = send(client->socket, data, (int)*size, 0);
 
 	if (result == SOCKET_ERROR)
 	{
@@ -262,7 +339,7 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 			error,
 
 			"client failed to send buffer %p, length %llu bytes in socket %llu",
-			data, *size, client->socket
+			data, original_size, client->socket
 		);
 	}
 
@@ -292,7 +369,7 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 	VERBOSE(
 		"removed client id {socket=%llu, address=\"%.*s\"}, reason=%s",
 		client_id->socket,
-		ARRAYSIZE(client_id->address),
+		(int)ARRAYSIZE(client_id->address),
 		client_id->address,
 		reason
 	);
@@ -339,15 +416,15 @@ inline errno_t _PollServerUDP(NetServer *server) {
 	{
 		NetAddressBuffer address_buffer = {0};
 
-		int size = (int)server->_handle->recv_buffer_sz;
+		int size = (int)server->_internal->recv_buffer_sz;
 
 		int result_code = _RecvAnyUDP(
 			server->socket,
 
-			server->_handle->recv_buffer,
+			server->_internal->recv_buffer,
 			&size,
 
-			server->_handle->connection_params.address_type,
+			server->_internal->connection_params.address_type,
 			&address_buffer
 		);
 
@@ -401,7 +478,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 					"kicked client {socket=%llu, address=%.*s}, server code=%d",
 					client_id.socket,
 
-					ARRAYSIZE(client_id.address),
+					(int)ARRAYSIZE(client_id.address),
 					client_id.address,
 
 					result
@@ -410,7 +487,8 @@ inline errno_t _PollServerTCP(NetServer *server) {
 			}
 		}
 
-		NetClientIDListNode *node = _AppendClientIDNode(
+		// discard return, return is the created node passed in as an argument
+		(void)_AppendClientIDNode(
 			&server->p_client_ids,
 			_CreateClientIDNode(&client_id)
 		);
@@ -419,7 +497,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 			"connected: %llu, %.*s\n",
 			client_id.socket,
 
-			ARRAYSIZE(client_id.address),
+			(int)ARRAYSIZE(client_id.address),
 			client_id.address
 		);
 	}
@@ -431,9 +509,13 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		NetClientIDListNode *const node = current_node;
 		current_node = current_node->_next;
 
-		int size = (int)server->_handle->recv_buffer_sz;
+		int size = (int)server->_internal->recv_buffer_sz;
 
-		int err_code = _RecvFromSocket(node->client_id.socket, server->_handle->recv_buffer, &size);
+		const int err_code = \
+			_RecvFromSocket(node->client_id.socket, server->_internal->recv_buffer, &size);
+
+		// error checking is done by the output parameter 'size'
+		(void)err_code;
 
 		// socket didn't send anything (or atleast we didn't receive anything from it)
 		if (size < 0)
@@ -455,7 +537,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		{
 			NetPacketData packet;
 
-			packet.data = server->_handle->recv_buffer;
+			packet.data = server->_internal->recv_buffer;
 			packet.size = size;
 
 			server->proc_client_recv(
@@ -1047,6 +1129,12 @@ inline void _CloseSocket(NetSocket socket) {
 	closesocket(socket);
 }
 
+inline void _AbortServer(NetServer *server, const char *reason) {
+	// TODO: colorize/use colorized print function to something like YELLOW
+	_ReportError(E_ABORT, "server: aborted hosting: reason=\"%s\"\n", reason);
+	NetCloseServer(server);
+}
+
 inline void _AbortClient(NetClient *client, const char *reason) {
 	// TODO: colorize/use colorized print function to something like YELLOW
 	_ReportError(E_ABORT, "client: connection aborted: reason=\"%s\"\n", reason);
@@ -1082,6 +1170,60 @@ inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id) {
 
 inline void _FreeClientIDNode(NetClientIDListNode *node) {
 	free(node);
+}
+
+inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output) {
+	const int native_addr_type = _AddressTypeToNative(address->type);
+	const bool any_addr = (address->name[0] == 0);
+
+	if (address->type == eNAddrType_IP6)
+	{
+		output->length = sizeof(output->data.ipv6);
+
+		if (any_addr)
+		{
+			output->data.ipv6 = (IN6_ADDR)IN6ADDR_ANY_INIT;
+			return EOK;
+		}
+
+		return inet_pton(native_addr_type, address->name, &output->data.ipv6);
+	}
+	// ipv4
+
+	output->length = sizeof(output->data.ipv4);
+
+	if (any_addr)
+	{
+		// IN_ADDR is nested structs & unions
+		output->data.ipv4 = (IN_ADDR){{{htonl(INADDR_ANY)}}};
+		return EOK;
+	}
+
+	return inet_pton(native_addr_type, address->name, &output->data.ipv4);
+}
+
+inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port, SockInAddress *output) {
+	const short native_addr_type = _AddressTypeToNative(address->type);
+	InAddress in_addr = {0};
+	// TODO: check return value
+	_ConvertNetAddressToInAddr(address, &in_addr);
+
+	// they two overlap
+	output->data.addr.sin_family = native_addr_type;
+	output->data.addr.sin_port = htons(port);
+
+	if (address->type == eNAddrType_IP6)
+	{
+		output->length = sizeof(output->data.addr6);
+		output->data.addr6.sin6_addr = in_addr.data.ipv6;
+		return EOK;
+	}
+
+
+	output->length = sizeof(output->data.addr);
+	output->data.addr.sin_addr = in_addr.data.ipv4;
+
+	return EOK;
 }
 
 inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first, const NetClientID *client_id) {
