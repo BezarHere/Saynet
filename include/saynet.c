@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -24,7 +25,7 @@
 #define ERROR_ENTRY(name) case name: return (#name) + 1
 
 // skip the 'WSA' part
-#define ERROR_ENTRY_WSA(name) case name: return (#name) + 4
+#define ERROR_ENTRY_WSA(name) case name: return (#name)
 
 #pragma region(defines)
 
@@ -134,8 +135,11 @@ static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
 
 static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
+static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output);
 static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
 																								 SockInAddress *output);
+
+static inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr);
 
 // removes it from the linked list and returns it
 // returns null if no match can be found
@@ -294,7 +298,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 		client->socket,
 		(const char *)data,
 		// FIXME: this will overflow! check for overflow later
-		*size,
+		(int)*size,
 		0,
 		(const SOCKADDR *)&sock_addr.data,
 		sock_addr.length
@@ -601,9 +605,9 @@ int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto) {
 short _AddressTypeToNative(NetAddressType type) {
 	switch (type)
 	{
-	case eNAddrType_IP4:
+	case eNAddrType_IPv4:
 		return AF_INET;
-	case eNAddrType_IP6:
+	case eNAddrType_IPv6:
 		return AF_INET6;
 
 	default:
@@ -615,13 +619,13 @@ inline NetAddressType _NativeToAddressType(short type) {
 	switch (type)
 	{
 	case AF_INET:
-		return eNAddrType_IP4;
+		return eNAddrType_IPv4;
 	case AF_INET6:
-		return eNAddrType_IP6;
+		return eNAddrType_IPv6;
 
 	default:
 		// TODO: report an error?
-		return eNAddrType_IP4;
+		return eNAddrType_IPv4;
 	}
 }
 
@@ -653,6 +657,12 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 		);
 	}
 
+	// rebuild address to be the representation fo the new processed native address
+	{
+		const InAddress in_address = _InAddrFromSockInAddr(&sock_addr);
+		_ConvertInAddrToNetAddress(&in_address, &address);
+	}
+
 	result_code = proc(socket, (SOCKADDR *)&sock_addr.data, sock_addr.length);
 
 	if (result_code != EOK)
@@ -661,7 +671,8 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 		return _ReportError(
 			result_code,
 
-			"context: task failed with socket=%llu to address \"%s\" port %d",
+			"%s: failed; socket=%llu, address=\"%s\", port=%d",
+			context,
 			socket,
 			address.name,
 			params->port
@@ -692,7 +703,7 @@ int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 }
 
 int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
-	return _CallUseAddress(socket, params, bind, "while binding socket");
+	return _CallUseAddress(socket, params, bind, "binding socket");
 }
 
 int _SocketToListen(NetSocket socket) {
@@ -746,7 +757,7 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 }
 
 inline int _ConnectSocket(NetSocket socket, const NetConnectionParams *params) {
-	return _CallUseAddress(socket, params, connect, "while connecting socket");
+	return _CallUseAddress(socket, params, connect, "connecting socket");
 }
 
 inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found) {
@@ -886,7 +897,7 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
 
 	memclear(*out_address, ARRAYSIZE(*out_address));
 
-	if (addr_type == eNAddrType_IP4)
+	if (addr_type == eNAddrType_IPv4)
 	{
 		SOCKADDR_IN addr = {0};
 		int len = sizeof(addr);
@@ -931,7 +942,7 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
 		inet_ntop(native_addr_family, &addr, *out_address, ARRAYSIZE(*out_address));
 	}
 
-	else if (addr_type == eNAddrType_IP6)
+	else if (addr_type == eNAddrType_IPv6)
 	{
 		SOCKADDR_IN6 addr = {0};
 		int len = sizeof(addr);
@@ -1033,7 +1044,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 int _ReportError(int code, const char *format, ...) {
 
 	_PutColor(stdout, eFGClr_Red);
-	printf("ERR[%s:%X]: ", _GetErrorName(code), code);
+	printf("ERR[%s]: ", _GetErrorName(code));
 
 	va_list va_list;
 	va_start(va_list, format);
@@ -1153,7 +1164,7 @@ inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *outp
 
 
 	//* === === === IPv6 === === ===
-	if (address->type == eNAddrType_IP6)
+	if (address->type == eNAddrType_IPv6)
 	{
 		output->length = sizeof(output->data.ipv6);
 
@@ -1195,6 +1206,39 @@ inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *outp
 	return EOK;
 }
 
+inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output) {
+
+	if (in_addr->length == sizeof(IN6_ADDR))
+	{
+		//* IPv6
+		output->type = eNAddrType_IPv6;
+	}
+	else if (in_addr->length == sizeof(IN_ADDR))
+	{
+		//* IPv6
+		output->type = eNAddrType_IPv4;
+	}
+	else
+	{
+		// unsupported, only IPv4 and IPv6
+		return EAFNOSUPPORT;
+	}
+
+	const char *result = inet_ntop(
+		_AddressTypeToNative(eNAddrType_IPv6),
+		&in_addr->data,
+		output->name,
+		ARRAYSIZE(output->name)
+	);
+
+	if (result == NULL)
+	{
+		return WSAGetLastError();
+	}
+
+	return EOK;
+}
+
 inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port, SockInAddress *output) {
 	const short native_addr_type = _AddressTypeToNative(address->type);
 	InAddress in_addr = {0};
@@ -1211,7 +1255,7 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 	output->data.addr.sin_family = native_addr_type;
 	output->data.addr.sin_port = htons(port);
 
-	if (address->type == eNAddrType_IP6)
+	if (address->type == eNAddrType_IPv6)
 	{
 		output->length = sizeof(output->data.addr6);
 		output->data.addr6.sin6_addr = in_addr.data.ipv6;
@@ -1223,6 +1267,30 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 	output->data.addr.sin_addr = in_addr.data.ipv4;
 
 	return EOK;
+}
+
+inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr) {
+	InAddress result;
+
+	//* IPv6
+	if (sock_in_addr->length == sizeof(SOCKADDR_IN6))
+	{
+		result.length = sizeof(IN6_ADDR);
+		result.data.ipv6 = sock_in_addr->data.addr6.sin6_addr;
+	}
+	//* IPv4
+	else if (sock_in_addr->length == sizeof(SOCKADDR_IN))
+	{
+		result.length = sizeof(IN_ADDR);
+		result.data.ipv4 = sock_in_addr->data.addr.sin_addr;
+	}
+	//* UNKNOWN
+	else
+	{
+		result.length = 0;
+	}
+
+	return result;
 }
 
 inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first, const NetClientID *client_id) {
@@ -1287,8 +1355,16 @@ inline bool _IsSocketDisconnectionError(int error_code) {
 	return error_code == WSAESHUTDOWN || error_code == WSAECONNRESET || error_code == WSAECONNABORTED;
 }
 
-inline const char *_GetErrorName(const errno_t error) {
-	switch (error)
+// returns the error name
+// if the error_code has no name (i.e not a valid/known error code), 
+// then the hex representation of the error code will be returned
+// ----
+// returns value should not be freed!
+inline const char *_GetErrorName(const errno_t error_code) {
+	enum { template_str_size = 16, hex_radix = 16 };
+
+	static char template_str[template_str_size] = {'0', 'x'};
+	switch (error_code)
 	{
 		ERROR_ENTRY(EPERM);
 		ERROR_ENTRY(ENOENT);
@@ -1462,7 +1538,8 @@ inline const char *_GetErrorName(const errno_t error) {
 		ERROR_ENTRY_WSA(WSA_QOS_ESHAPERATEOBJ);
 		ERROR_ENTRY_WSA(WSA_QOS_RESERVED_PETYPE);
 	default:
-		return "UNKNOWN_ERROR";
+		_ultoa_s(error_code, template_str + 2, template_str_size - 2, hex_radix);
+		return template_str;
 	}
 }
 

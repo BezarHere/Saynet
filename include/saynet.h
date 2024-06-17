@@ -49,8 +49,8 @@ typedef SAYNET_ENUM NetConnectionProtocol
 
 typedef SAYNET_ENUM NetAddressType
 {
-	eNAddrType_IP4,
-	eNAddrType_IP6,
+	eNAddrType_IPv4,
+	eNAddrType_IPv6,
 } NetAddressType;
 
 
