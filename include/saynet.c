@@ -79,6 +79,13 @@ typedef struct NetInternalData
 	NetConnectionParams connection_params;
 } NetInternalData;
 
+typedef struct AddressList
+{
+	size_t count;
+	NetAddress *data;
+	size_t _capacity;
+} AddressList;
+
 typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
 
 static WSADATA g_wsa;
@@ -89,7 +96,7 @@ static inline int _StopNetService();
 static inline errno_t _PollServerUDP(NetServer *server);
 static inline errno_t _PollServerTCP(NetServer *server);
 
-static inline int _ConnectionProtocolToNative(NetConnectionProtocol proto);
+static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 static inline short _AddressTypeToNative(NetAddressType type);
 static inline NetAddressType _NativeToAddressType(short type);
@@ -111,8 +118,7 @@ static inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out
 
 // size is in/out
 static inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size);
-static inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
-															NetAddressType addr_type, NetAddressBuffer *out_address);
+static inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *address);
 
 // sets the size for the recv and send buffers
 static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
@@ -139,6 +145,11 @@ static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddres
 static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
 																								 SockInAddress *output);
 
+static inline int _HostNameToAddressList(const char *host_name, NetAddressType address_type,
+																				 NetConnectionProtocol conn_protocol,
+																				 AddressList *output);
+
+static inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, int length);
 static inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr);
 
 // removes it from the linked list and returns it
@@ -152,6 +163,7 @@ static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_f
 
 static inline bool _IsSocketDisconnectionError(int error_code);
 
+static inline errno_t _GetLastNetError();
 static inline const char *_GetErrorName(errno_t error);
 
 static inline void *memclear(void *mem, size_t size) {
@@ -180,6 +192,11 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	if (params->connection_protocol == eNConnectProto_TCP)
 	{
 		result_code = _ConnectSocket(client->socket, params);
+		ASSERT_CLIENT_CREATION(result_code);
+	}
+	else
+	{
+		result_code = _BindSocket(client->socket, params);
 		ASSERT_CLIENT_CREATION(result_code);
 	}
 
@@ -291,8 +308,11 @@ errno_t NetClientSendToUDP(NetClient *client,
 	SockInAddress sock_addr = {0};
 
 	// TODO: check return code
-	_ConvertNetAddressToSockInAddr(address, client->_internal->connection_params.port, &sock_addr);
-
+	_ConvertNetAddressToSockInAddr(
+		address,
+		htons(client->_internal->connection_params.port),
+		&sock_addr
+	);
 
 	int result_code = sendto(
 		client->socket,
@@ -306,7 +326,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 
 	if (result_code <= -1)
 	{
-		const int error = WSAGetLastError();
+		const int error = _GetLastNetError();
 		const size_t original_size = *size;
 
 		*size = 0;
@@ -335,7 +355,7 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 
 	if (result == SOCKET_ERROR)
 	{
-		const int error = WSAGetLastError();
+		const int error = _GetLastNetError();
 		const size_t original_size = *size;
 
 		*size = 0;
@@ -397,7 +417,7 @@ inline int _StartNetService() {
 	if (result != EOK)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"wsa startup failed, net service can't be run"
 		);
@@ -412,7 +432,7 @@ inline int _StopNetService() {
 	if (result != EOK)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
 		);
@@ -435,8 +455,7 @@ inline errno_t _PollServerUDP(NetServer *server) {
 			server->_internal->recv_buffer,
 			&size,
 
-			server->_internal->connection_params.address_type,
-			&address.name
+			&address
 		);
 
 		// server's socket has shutdown/closed prior to recv
@@ -444,6 +463,7 @@ inline errno_t _PollServerUDP(NetServer *server) {
 		{
 			break;
 		}
+
 
 		if (result_code != EOK)
 		{
@@ -576,7 +596,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 	return EOK;
 }
 
-int _ConnectionProtocolToNative(NetConnectionProtocol proto) {
+int _ConnectionProtocolToNativeST(NetConnectionProtocol proto) {
 	switch (proto)
 	{
 	case eNConnectProto_TCP:
@@ -593,9 +613,9 @@ int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto) {
 	switch (proto)
 	{
 	case eNConnectProto_TCP:
-		return IPPROTO_UDP;
-	case eNConnectProto_UDP:
 		return IPPROTO_TCP;
+	case eNConnectProto_UDP:
+		return IPPROTO_UDP;
 
 	default:
 		return IPPROTO_TCP;
@@ -645,7 +665,7 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 
 	int result_code = -1;
 
-	result_code = _ConvertNetAddressToSockInAddr(&address, params->port, &sock_addr);
+	result_code = _ConvertNetAddressToSockInAddr(&address, htons(params->port), &sock_addr);
 
 	if (result_code != EOK)
 	{
@@ -667,7 +687,7 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 
 	if (result_code != EOK)
 	{
-		result_code = WSAGetLastError();
+		result_code = _GetLastNetError();
 		return _ReportError(
 			result_code,
 
@@ -685,14 +705,13 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	*pSocket = socket(
 		_AddressTypeToNative(params->address_type),
-		_ConnectionProtocolToNative(params->connection_protocol),
-		IPPROTO_UDP
-		// _ConnectionProtocolToNativeIP(params->connection_protocol)
+		_ConnectionProtocolToNativeST(params->connection_protocol),
+		_ConnectionProtocolToNativeIP(params->connection_protocol)
 	);
 
 	if (*pSocket == INVALID_SOCKET)
 	{
-		return _ReportError(WSAGetLastError(), "Failed to create a socket");
+		return _ReportError(_GetLastNetError(), "Failed to create a socket");
 	}
 
 	// FIXME: make this configurable by the user
@@ -771,7 +790,7 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 	{
 		*found = false;
 
-		int error = WSAGetLastError();
+		int error = _GetLastNetError();
 		if (error == WSAEWOULDBLOCK)
 		{
 			return EOK;
@@ -821,7 +840,7 @@ inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out) {
 	if (result != EOK)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"failed to get the socket address of socket %llu",
 			socket
@@ -835,7 +854,7 @@ inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out) {
 	// if (result != 1)
 	// {
 	// 	return _ReportError(
-	// 		WSAGetLastError(),
+	// 		_GetLastNetError(),
 
 	// 		"while getting socket address: inet_ntop(%d, %p, %p, %llu) failed",
 	// 		address_family,
@@ -853,7 +872,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 
 	if (result < 0)
 	{
-		const int error = WSAGetLastError();
+		const int error = _GetLastNetError();
 		const int original_size = *size;
 
 		// there is simply no data to receive
@@ -890,97 +909,66 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 	return EOK;
 }
 
-inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size,
-											 NetAddressType addr_type, NetAddressBuffer *out_address) {
-	const int native_addr_family = _AddressTypeToNative(addr_type);
+inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *address) {
+	enum { recvfrom_flags = 0 };
+	// value of (*size) at the head of the function, prior to any modifications 
 	const int original_size = *size;
 
-	memclear(*out_address, ARRAYSIZE(*out_address));
+	memclear(address->name, ARRAYSIZE(address->name));
 
-	if (addr_type == eNAddrType_IPv4)
+	SockInAddress sock_in_addr = {0};
+	sock_in_addr.length = sizeof(sock_in_addr);
+
+	const int result = recvfrom(
+		socket,
+		(char *)data,
+		original_size,
+		recvfrom_flags,
+		(SOCKADDR *)&sock_in_addr.data,
+		&sock_in_addr.length
+	);
+
+	if (result < 0)
 	{
-		SOCKADDR_IN addr = {0};
-		int len = sizeof(addr);
+		const int error = _GetLastNetError();
 
-		int result = recvfrom(socket, (char *)data, *size, 0, (SOCKADDR *)&addr, &len);
-
-		if (result < 0)
+		// no data, wsa would block waiting for more data to arrive
+		// but we disabled waiting
+		if (error == WSAEWOULDBLOCK)
 		{
-			const int error = WSAGetLastError();
-
-			// unrecoverable error
-			if (_IsSocketDisconnectionError(error))
-			{
-				*size = -2;
-			}
-			// no more stuff to receive (socket tried to block to get more)
-			else if (error == WSAEWOULDBLOCK)
-			{
-				*size = 0;
-			}
-			// average error
-			else
-			{
-				*size = -1;
-			}
-
-			return _ReportError(
-				error,
-
-				"failed to receive data to buffer [%p, len=%d] from socket %llu (UDP)",
-
-				data,
-				original_size,
-				socket
-			);
+			*size = 0;
+			return EOK;
 		}
 
-
-		*size = result;
-
-
-		inet_ntop(native_addr_family, &addr, *out_address, ARRAYSIZE(*out_address));
-	}
-
-	else if (addr_type == eNAddrType_IPv6)
-	{
-		SOCKADDR_IN6 addr = {0};
-		int len = sizeof(addr);
-
-		int result = recvfrom(socket, (char *)data, *size, 0, (SOCKADDR *)&addr, &len);
-
-		if (result < 0)
+		if (_IsSocketDisconnectionError(error))
 		{
-			const int error = WSAGetLastError();
-
-			if (_IsSocketDisconnectionError(error))
-			{
-				*size = -2;
-			}
-			else
-			{
-				*size = -1;
-			}
-
-			return _ReportError(
-				error,
-
-				"failed to receive data to buffer [%p, len=%d] from socket %llu (UDP)",
-
-				data,
-				original_size,
-				socket
-			);
+			*size = -2;
+		}
+		else
+		{
+			*size = -1;
 		}
 
+		return _ReportError(
+			error,
 
-		*size = result;
+			"recvfrom failed and didn't return the any address as buffer [%p, len=%d] from socket %llu (UDP)",
 
-
-		inet_ntop(native_addr_family, &addr, *out_address, ARRAYSIZE(*out_address));
+			data,
+			original_size,
+			socket
+		);
 	}
 
-	(*out_address)[ARRAYSIZE(*out_address) - 1] = 0;
+	*size = result;
+
+	{
+		const InAddress in_address = _InAddrFromSockInAddr(&sock_in_addr);
+		// TODO: error checking
+		_ConvertInAddrToNetAddress(&in_address, address);
+	}
+
+	(address->name)[ARRAYSIZE(address->name) - 1] = 0;
 
 	return EOK;
 }
@@ -992,7 +980,7 @@ inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
 	if (result_code == SOCKET_ERROR)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"failed to set the SO_RCVBUF for the socket %llu to %d",
 			socket,
@@ -1004,7 +992,7 @@ inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
 	if (result_code == SOCKET_ERROR)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"failed to set the SO_SNDBUF for the socket %llu to %d",
 			socket,
@@ -1029,7 +1017,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 	if (result_code == SOCKET_ERROR)
 	{
 		return _ReportError(
-			WSAGetLastError(),
+			_GetLastNetError(),
 
 			"failed to set the SO_MAX_MSG_SIZE for the socket %llu to %d",
 			socket,
@@ -1157,7 +1145,9 @@ inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *outp
 	};
 
 	const int native_addr_type = _AddressTypeToNative(address->type);
-	const bool any_addr = (address->name[0] == 0);
+
+	// either the address name starts with null (zero length) or is equal to "*"
+	const bool any_addr = (address->name[0] == 0 || strcmp("*", address->name) == 0);
 
 
 	int inet_pton_result_code = INetPToN_Success;
@@ -1200,7 +1190,7 @@ inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *outp
 
 	if (inet_pton_result_code == INetPToN_WSAERRor)
 	{
-		return WSAGetLastError();
+		return _GetLastNetError();
 	}
 
 	return EOK;
@@ -1225,7 +1215,7 @@ inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *outp
 	}
 
 	const char *result = inet_ntop(
-		_AddressTypeToNative(eNAddrType_IPv6),
+		_AddressTypeToNative(output->type),
 		&in_addr->data,
 		output->name,
 		ARRAYSIZE(output->name)
@@ -1233,7 +1223,7 @@ inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *outp
 
 	if (result == NULL)
 	{
-		return WSAGetLastError();
+		return _GetLastNetError();
 	}
 
 	return EOK;
@@ -1253,7 +1243,7 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 
 	// they two overlap
 	output->data.addr.sin_family = native_addr_type;
-	output->data.addr.sin_port = htons(port);
+	output->data.addr.sin_port = port;
 
 	if (address->type == eNAddrType_IPv6)
 	{
@@ -1267,6 +1257,78 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 	output->data.addr.sin_addr = in_addr.data.ipv4;
 
 	return EOK;
+}
+
+inline int _HostNameToAddressList(const char *host_name, NetAddressType address_type,
+																	NetConnectionProtocol conn_protocol, AddressList *output) {
+	static const char *service_name = NULL;
+
+	ADDRINFO hints = {0};
+
+	hints.ai_flags = 0;
+	hints.ai_family = _AddressTypeToNative(address_type);
+	hints.ai_protocol = _ConnectionProtocolToNativeIP(conn_protocol);
+	hints.ai_socktype = _ConnectionProtocolToNativeST(conn_protocol);
+
+	ADDRINFO *info_list = NULL;
+
+	const int error_code = getaddrinfo(host_name, service_name, &hints, &info_list);
+
+	if (error_code != EOK)
+	{
+		// error code is not contained withing _GetLastNetError()
+		return _ReportError(
+			error_code,
+
+			"getaddrinfo(\"%s\", NULL, %p, %p) failed",
+
+			host_name, &hints, &info_list
+		);
+	}
+
+	ADDRINFO *current_info = info_list;
+	while (current_info)
+	{
+		const SockInAddress sock_address =
+			_SockInAddrFromDynamicSockAddr(current_info->ai_addr, (int)current_info->ai_addrlen);
+
+		const InAddress in_address = _InAddrFromSockInAddr(&sock_address);
+
+		NetAddress net_address = {0};
+		(void)_ConvertInAddrToNetAddress(&in_address, &net_address);
+
+
+		printf("address at %p: \"%s\"\n", current_info, net_address.name);
+
+		current_info = current_info->ai_next;
+	}
+
+	freeaddrinfo(info_list);
+
+	return 0;
+}
+
+inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, const int length) {
+	SockInAddress result = {0};
+
+	result.length = length;
+
+	if (length == sizeof(SOCKADDR_IN))
+	{
+		result.data.addr = *(SOCKADDR_IN *)addr;
+	}
+
+	else if (length == sizeof(SOCKADDR_IN6))
+	{
+		result.data.addr6 = *(SOCKADDR_IN6 *)addr;
+	}
+
+	else
+	{
+		//! UNKNOWN TYPE
+	}
+
+	return result;
 }
 
 inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr) {
@@ -1353,6 +1415,11 @@ inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 
 inline bool _IsSocketDisconnectionError(int error_code) {
 	return error_code == WSAESHUTDOWN || error_code == WSAECONNRESET || error_code == WSAECONNABORTED;
+}
+
+// for portablity
+inline errno_t _GetLastNetError() {
+	return WSAGetLastError();
 }
 
 // returns the error name
