@@ -1,3 +1,9 @@
+/*
+* SayNet
+* simple networking library, capable of TCP or UDP in IPv4/6
+*
+* Zahr abdulatif babker (C) 2023-2024
+*/
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -34,14 +40,6 @@ typedef struct NetPacketDataView
 } NetPacketDataView;
 
 struct NetClientID;
-
-// will kick the client if the returns value is non-zero
-typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
-// user has to free the packet data, return value indicates the state of the packet
-// if the return value is not zero, then the client will know that the packet is bad (or such)
-// NOTE: on UDP, client_id's socket shouldn't be used (junk data), but the client address is useful
-typedef int (*NetClientRecvProc)(const struct NetClientID *client_id, NetPacketData packet_data);
-
 
 typedef SAYNET_ENUM NetConnectionProtocol
 {
@@ -90,11 +88,31 @@ typedef struct NetClientIDListNode
 	struct NetClientIDListNode *_next;
 } NetClientIDListNode;
 
+// will kick the client if the returns value is non-zero
+typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
+
+/// @brief TCP receive callback for servers
+/// @return if the return value is not zero, then the client will know that the packet is bad (or such)
+/// @see on UDP, see NetRecvProc
+/// @note packet data is owned/freed by saynet, copy the packet to a new buffer to keep after callback
+typedef int (*NetClientRecvProc)(const struct NetClientID *client_id, NetPacketData packet_data);
+
+/// @brief TCP receive callback for clients
+/// @note the packet data is freed by saynet, copy to retain data
+typedef int (*NetServerRecvProc)(NetPacketData packet_data);
+
+// UDP callback for receiving data packets
+// make sure to not accept data from malicious sources 
+// packet data is owned/freed by saynet, copy the packet to a new buffer to keep after callback
+typedef int (*NetRecvProc)(const NetAddress *address, NetPacketData packet_data);
+
 typedef struct NetInternalData *NetInternalHandle;
 
 typedef struct NetClient
 {
 	NetSocket socket;
+
+	NetServerRecvProc proc_server_recv;
 
 	NetInternalHandle _internal;
 } NetClient;
@@ -103,8 +121,14 @@ typedef struct NetServer
 {
 	NetSocket socket;
 
+	// client joined callback (TCP)
 	NetClientJoinedProc proc_client_joined;
+
+	// TCP receive proc
 	NetClientRecvProc proc_client_recv;
+
+	// UDP receive proc
+	NetRecvProc proc_recv;
 
 	NetClientIDListNode *p_client_ids;
 
@@ -131,10 +155,10 @@ extern "C" {
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
 	/// @return error if failed, zero at success
 	SAYNET_API errno_t NetClientSendToUDP(NetClient *client,
-																		 const void *data, size_t *size,
-																		 const NetAddress *address);
+																				const void *data, size_t *size,
+																				const NetAddress *address);
 
-	/// @brief 
+	/// @brief send data to the server, only works in TCP (for UPD, see NetClientSendToUDP)
 	/// @param client 
 	/// @param data 
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
