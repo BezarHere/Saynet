@@ -21,10 +21,10 @@
 
 #define VERBOSE(...) printf(__VA_ARGS__)
 
-#define ERROR_ENTRY(name) case name: return #name
+#define ERROR_ENTRY(name) case name: return (#name) + 1
 
 // skip the 'WSA' part
-#define ERROR_ENTRY_WSA(name) case name: return (#name) + 3
+#define ERROR_ENTRY_WSA(name) case name: return (#name) + 4
 
 #pragma region(defines)
 
@@ -627,89 +627,33 @@ inline NetAddressType _NativeToAddressType(short type) {
 
 inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 													 const CallUseAddressProc proc, const char *context) {
-	enum
-	{
-		INetPToN_Success = 1
-	};
-	const short native_addr_type = _AddressTypeToNative(params->address_type);
-	const NetPort net_port = htons(params->port);
 
-	const bool any_address = (params->address[0] == 0);
+	NetAddress address = {0};
+
+	address.type = params->address_type;
+	memcpy(
+		address.name,
+		params->address,
+		ARRAYSIZE(address.name)
+	);
+
+	SockInAddress sock_addr = {0};
 
 	int result_code = -1;
 
-	if (params->address_type == eNAddrType_IP4)
+	result_code = _ConvertNetAddressToSockInAddr(&address, params->port, &sock_addr);
+
+	if (result_code != EOK)
 	{
-		struct sockaddr_in address = {0};
-		address.sin_family = native_addr_type;
-		address.sin_port = net_port;
+		return _ReportError(
+			result_code,
 
-		if (any_address)
-		{
-			address.sin_addr = (struct in_addr){0};
-			result_code = INetPToN_Success;
-		}
-		else
-		{
-			result_code = inet_pton(native_addr_type, params->address, &address.sin_addr);
-		}
-
-		if (result_code != INetPToN_Success)
-		{
-			result_code = WSAGetLastError();
-			return _ReportError(
-				result_code,
-
-				"%s: inet_pton(%d, \"%.*s\", %p) failed",
-				context,
-
-				native_addr_type,
-
-				strnlen(params->address, ARRAYSIZE(params->address)),
-				params->address,
-
-				&address.sin_addr
-			);
-		}
-
-		result_code = proc(socket, (SOCKADDR *)&address, sizeof(address));
+			"failed to encode address \"%s\" port %d",
+			address.name, params->port
+		);
 	}
-	else if (params->address_type == eNAddrType_IP6)
-	{
-		struct sockaddr_in6 address6 = {0};
-		address6.sin6_family = native_addr_type;
-		address6.sin6_port = net_port;
 
-		if (any_address)
-		{
-			address6.sin6_addr = (struct in6_addr){0};
-			result_code = INetPToN_Success;
-		}
-		else
-		{
-			result_code = inet_pton(native_addr_type, params->address, &address6.sin6_addr);
-		}
-
-		if (result_code != INetPToN_Success)
-		{
-			result_code = WSAGetLastError();
-			return _ReportError(
-				result_code,
-
-				"%s: inet_pton(%d, \"%.*s\", %p) failed",
-				context,
-
-				native_addr_type,
-
-				strnlen(params->address, ARRAYSIZE(params->address)),
-				params->address,
-
-				&address6.sin6_addr
-			);
-		}
-
-		result_code = proc(socket, (SOCKADDR *)&address6, sizeof(address6));
-	}
+	result_code = proc(socket, (SOCKADDR *)&sock_addr.data, sock_addr.length);
 
 	if (result_code != EOK)
 	{
@@ -717,15 +661,14 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 		return _ReportError(
 			result_code,
 
-			"failed to bind socket %llu to \"%.*s\"",
+			"context: task failed with socket=%llu to address \"%s\" port %d",
 			socket,
-
-			strnlen(params->address, ARRAYSIZE(params->address)),
-			params->address
+			address.name,
+			params->port
 		);
 	}
 
-	return 0;
+	return EOK;
 }
 
 int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
@@ -1090,7 +1033,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 int _ReportError(int code, const char *format, ...) {
 
 	_PutColor(stdout, eFGClr_Red);
-	printf("ERR[%s:%d]: ", _GetErrorName(code), code);
+	printf("ERR[%s:%X]: ", _GetErrorName(code), code);
 
 	va_list va_list;
 	va_start(va_list, format);
@@ -1195,9 +1138,21 @@ inline void _FreeClientIDNode(NetClientIDListNode *node) {
 }
 
 inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output) {
+	enum
+	{
+		INetPToN_WSAERRor = -1,
+		INetPToN_InvalidAddressFormat = 0,
+		INetPToN_Success = 1,
+	};
+
 	const int native_addr_type = _AddressTypeToNative(address->type);
 	const bool any_addr = (address->name[0] == 0);
 
+
+	int inet_pton_result_code = INetPToN_Success;
+
+
+	//* === === === IPv6 === === ===
 	if (address->type == eNAddrType_IP6)
 	{
 		output->length = sizeof(output->data.ipv6);
@@ -1208,27 +1163,49 @@ inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *outp
 			return EOK;
 		}
 
-		return inet_pton(native_addr_type, address->name, &output->data.ipv6);
+		inet_pton_result_code = inet_pton(native_addr_type, address->name, &output->data.ipv6);
 	}
-	// ipv4
 
-	output->length = sizeof(output->data.ipv4);
-
-	if (any_addr)
+	//* === === === IPv4 === === ===
+	else
 	{
-		// IN_ADDR is nested structs & unions
-		output->data.ipv4 = (IN_ADDR){{{htonl(INADDR_ANY)}}};
-		return EOK;
+		output->length = sizeof(output->data.ipv4);
+
+		if (any_addr)
+		{
+			// IN_ADDR is nested structs & unions
+			output->data.ipv4 = (IN_ADDR){{{htonl(INADDR_ANY)}}};
+			return EOK;
+		}
+
+		inet_pton_result_code = inet_pton(native_addr_type, address->name, &output->data.ipv4);
 	}
 
-	return inet_pton(native_addr_type, address->name, &output->data.ipv4);
+
+	if (inet_pton_result_code == INetPToN_InvalidAddressFormat)
+	{
+		return EBADF;
+	}
+
+	if (inet_pton_result_code == INetPToN_WSAERRor)
+	{
+		return WSAGetLastError();
+	}
+
+	return EOK;
 }
 
 inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port, SockInAddress *output) {
 	const short native_addr_type = _AddressTypeToNative(address->type);
 	InAddress in_addr = {0};
-	// TODO: check return value
-	_ConvertNetAddressToInAddr(address, &in_addr);
+
+	const int in_addr_conv_result = _ConvertNetAddressToInAddr(address, &in_addr);
+
+	if (in_addr_conv_result != EOK)
+	{
+		// TODO: error printout
+		return in_addr_conv_result;
+	}
 
 	// they two overlap
 	output->data.addr.sin_family = native_addr_type;
