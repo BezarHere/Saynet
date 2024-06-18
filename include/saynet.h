@@ -73,6 +73,13 @@ typedef struct NetAddress
 	NetAddressBuffer name;
 } NetAddress;
 
+typedef struct NetUserAddress
+{
+	NetAddressType type;
+	NetAddressBuffer name;
+	NetPort port;
+} NetUserAddress;
+
 typedef struct NetClientID
 {
 	NetSocket socket;
@@ -128,7 +135,7 @@ typedef struct NetServer
 	NetClientRecvProc proc_client_recv;
 
 	// UDP receive proc
-	NetRecvProc proc_recv;
+	NetRecvProc proc_udp_recv;
 
 	NetClientIDListNode *p_client_ids;
 
@@ -156,7 +163,7 @@ extern "C" {
 	/// @return error if failed, zero at success
 	SAYNET_API errno_t NetClientSendToUDP(NetClient *client,
 																				const void *data, size_t *size,
-																				const NetAddress *address);
+																				const NetUserAddress *address);
 
 	/// @brief send data to the server, only works in TCP (for UPD, see NetClientSendToUDP)
 	/// @param client 

@@ -29,6 +29,31 @@
 
 #pragma region(defines)
 
+
+enum
+{
+	eSocketTCP = SOCK_STREAM,
+	eSocketUDB = SOCK_DGRAM,
+};
+
+enum
+{
+	DefaultRecvBufferSz = 0x10000,
+	MaxInactivityHits = 2500,
+
+	MaxAddressListSize = 24
+};
+
+typedef enum ConsoleColor
+{
+	eFGClr_Clear = 0,
+	// eFGClr_Black = 30,
+	eFGClr_Red = 31,
+	eFGClr_Green = 32,
+	eFGClr_Yellow = 33,
+	eFGClr_Blue = 34,
+} ConsoleColor;
+
 typedef struct InAddress
 {
 	union _InAddress_data
@@ -49,28 +74,6 @@ typedef struct SockInAddress
 	int length;
 } SockInAddress;
 
-enum
-{
-	eSocketTCP = SOCK_STREAM,
-	eSocketUDB = SOCK_DGRAM,
-};
-
-enum
-{
-	DefaultRecvBufferSz = 0x10000,
-	MaxInactivityHits = 2500,
-};
-
-typedef enum ConsoleColor
-{
-	eFGClr_Clear = 0,
-	// eFGClr_Black = 30,
-	eFGClr_Red = 31,
-	eFGClr_Green = 32,
-	eFGClr_Yellow = 33,
-	eFGClr_Blue = 34,
-} ConsoleColor;
-
 typedef struct NetInternalData
 {
 	size_t recv_buffer_sz;
@@ -79,11 +82,17 @@ typedef struct NetInternalData
 	NetConnectionParams connection_params;
 } NetInternalData;
 
+typedef struct AddressListNode
+{
+	NetAddress net_address;
+	SockInAddress sock_inaddr;
+	InAddress inaddr;
+} AddressListNode;
+
 typedef struct AddressList
 {
 	size_t count;
-	NetAddress *data;
-	size_t _capacity;
+	AddressListNode data[MaxAddressListSize];
 } AddressList;
 
 typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
@@ -145,7 +154,7 @@ static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddres
 static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
 																								 SockInAddress *output);
 
-static inline int _HostNameToAddressList(const char *host_name, NetAddressType address_type,
+static inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 																				 NetConnectionProtocol conn_protocol,
 																				 AddressList *output);
 
@@ -186,6 +195,9 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	result_code = _StartNetService();
 	ASSERT_CLIENT_CREATION(result_code);
 
+
+	_HostNameToAddressList(params->port, params->address_type, params->connection_protocol, NULL);
+
 	result_code = _CreateSocket(&client->socket, params);
 	ASSERT_CLIENT_CREATION(result_code);
 
@@ -206,6 +218,7 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 	int result_code = 0;
 
+
 	server->socket = INVALID_SOCKET;
 
 	_DestroyInternalData(server->_internal);
@@ -214,6 +227,7 @@ errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
 
 	result_code = _StartNetService();
 	ASSERT_SERVER_CREATION(result_code);
+
 
 	result_code = _InitSocket(&server->socket, params);
 	ASSERT_SERVER_CREATION(result_code);
@@ -304,13 +318,19 @@ const NetConnectionParams *NetServerGetConnectionParams(const NetServer *server)
 
 errno_t NetClientSendToUDP(NetClient *client,
 													 const void *data, size_t *size,
-													 const NetAddress *address) {
+													 const NetUserAddress *address) {
 	SockInAddress sock_addr = {0};
+
+	//! FIXME: error-out if the send address is identical to the client's address (INVALID IN UDP)
+
+	const NetPort port = address->port;
 
 	// TODO: check return code
 	_ConvertNetAddressToSockInAddr(
-		address,
-		htons(client->_internal->connection_params.port),
+		// NOTE: a pointer to a NetUserAddress is identical to a pointer to a NetAddress
+		// given that the start of NetUserAddress is just a NetAddress
+		(const NetAddress *)address,
+		port,
 		&sock_addr
 	);
 
@@ -339,8 +359,8 @@ errno_t NetClientSendToUDP(NetClient *client,
 		return _ReportError(
 			error,
 
-			"client failed to send (UDP) buffer %p, length %llu bytes in socket %llu to %s",
-			data, original_size, client->socket, address->name
+			"client failed to send (UDP) buffer %p, length %llu bytes in socket %llu to \"%s\":%d",
+			data, original_size, client->socket, address->name, port
 		);
 	}
 
@@ -464,6 +484,7 @@ inline errno_t _PollServerUDP(NetServer *server) {
 			break;
 		}
 
+		VERBOSE("received %d bytes on udp", size);
 
 		if (result_code != EOK)
 		{
@@ -480,18 +501,19 @@ inline errno_t _PollServerUDP(NetServer *server) {
 
 		// process data
 
-		if (server->proc_recv)
+		if (server->proc_udp_recv)
 		{
 			NetPacketData data = {0};
 
 			data.data = server->_internal->recv_buffer;
 			data.size = server->_internal->recv_buffer_sz;
 
-			const int callback_recv_result = server->proc_recv(&address, data);
+			const int callback_recv_result = server->proc_udp_recv(&address, data);
 
 			// nothing todo with this rn
 			(void)callback_recv_result;
 		}
+
 
 	}
 
@@ -1259,9 +1281,9 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 	return EOK;
 }
 
-inline int _HostNameToAddressList(const char *host_name, NetAddressType address_type,
+inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 																	NetConnectionProtocol conn_protocol, AddressList *output) {
-	static const char *service_name = NULL;
+	static const char *nodename = NULL;
 
 	ADDRINFO hints = {0};
 
@@ -1272,7 +1294,11 @@ inline int _HostNameToAddressList(const char *host_name, NetAddressType address_
 
 	ADDRINFO *info_list = NULL;
 
-	const int error_code = getaddrinfo(host_name, service_name, &hints, &info_list);
+	char port_str[16] = {0};
+
+	_ultoa_s(port, port_str, ARRAYSIZE(port_str), 10);
+
+	const int error_code = getaddrinfo(nodename, port_str, &hints, &info_list);
 
 	if (error_code != EOK)
 	{
@@ -1280,14 +1306,15 @@ inline int _HostNameToAddressList(const char *host_name, NetAddressType address_
 		return _ReportError(
 			error_code,
 
-			"getaddrinfo(\"%s\", NULL, %p, %p) failed",
+			"getaddrinfo(\"%d\", NULL, %p, %p) failed",
 
-			host_name, &hints, &info_list
+			port, &hints, &info_list
 		);
 	}
 
-	ADDRINFO *current_info = info_list;
-	while (current_info)
+
+	for (ADDRINFO *current_info = info_list;
+			 current_info != NULL; current_info = current_info->ai_next)
 	{
 		const SockInAddress sock_address =
 			_SockInAddrFromDynamicSockAddr(current_info->ai_addr, (int)current_info->ai_addrlen);
@@ -1297,15 +1324,13 @@ inline int _HostNameToAddressList(const char *host_name, NetAddressType address_
 		NetAddress net_address = {0};
 		(void)_ConvertInAddrToNetAddress(&in_address, &net_address);
 
+		printf("getaddrinfo address at %p: \"%s\"\n", current_info, net_address.name);
 
-		printf("address at %p: \"%s\"\n", current_info, net_address.name);
-
-		current_info = current_info->ai_next;
 	}
 
 	freeaddrinfo(info_list);
 
-	return 0;
+	return EOK;
 }
 
 inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, const int length) {
