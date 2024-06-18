@@ -190,7 +190,7 @@ extern "C" {
 	/// @return error if failed, zero at success
 	SAYNET_API errno_t NetClientSend(NetClient *client, const void *data, size_t *size);
 
-	/// @brief send data to the server, only works in TCP (for UPD, see NetClientSendToUDP)
+	/// @brief send data to the client, only works in TCP (for UPD, see NetClientSendToUDP)
 	/// @param server the server that will send the data
 	/// @param client the client id that is going to receive the data 
 	/// @param data the data

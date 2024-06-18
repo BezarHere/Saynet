@@ -481,32 +481,21 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 }
 
 errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *size) {
-	SockInAddress sockaddr = {};
+	const size_t original_size = *size;
 	int result = 0;
 
-	result = _ConvertNetAddressToSockInAddr(
-		&client->address,
-		NetServerGetCreateParams(server)->address.port,
-		&sockaddr
+	result = send(client->socket, data, original_size, 0);
+
+	printf(
+		"sending stuff to client %llu \"%s\":%d\n",
+		client->socket,
+		client->address.name,
+		NetServerGetCreateParams(server)->address.port
 	);
-
-	if (result != EOK)
-	{
-		return ERR_LOG_V(
-			result,
-
-			"failed to convert \"%s\":%d to a native socket address",
-			client->address.name,
-			NetServerGetCreateParams(server)->address.port
-		);
-	}
-
-	result = sendto(server->socket, data, (int)*size, 0, (SOCKADDR *)&sockaddr.data, sockaddr.length);
 
 	if (result == SOCKET_ERROR)
 	{
 		const int error = _GetLastNetError();
-		const size_t original_size = *size;
 
 		*size = 0;
 
@@ -518,14 +507,17 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *
 		return ERR_LOG_V(
 			error,
 
-			"server failed to sendto \"%s\":%d buffer %p, length %llu bytes in socket %llu",
+			"server failed to sendto \"%s\":%d buffer %p, length %llu bytes through socket %llu -> %llu",
 			client->address.name,
 			NetServerGetCreateParams(server)->address.port,
 			data,
 			original_size,
+			server->socket,
 			client->socket
 		);
 	}
+
+	*size = result;
 
 	return EOK;
 }
