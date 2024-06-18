@@ -79,7 +79,7 @@ typedef struct NetInternalData
 	size_t recv_buffer_sz;
 	uint8_t *recv_buffer;
 
-	NetConnectionParams connection_params;
+	NetCreateParams connection_params;
 } NetInternalData;
 
 typedef struct AddressListNode
@@ -110,17 +110,17 @@ static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 static inline short _AddressTypeToNative(NetAddressType type);
 static inline NetAddressType _NativeToAddressType(short type);
 
-static inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
+static inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 																	CallUseAddressProc proc, const char *context);
 
-static inline int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params);
-static inline int _BindSocket(NetSocket socket, const NetConnectionParams *params);
+static inline int _CreateSocket(NetSocket *pSocket, const NetCreateParams *params);
+static inline int _BindSocket(NetSocket socket, const NetCreateParams *params);
 static inline int _SocketToListen(NetSocket socket);
 static inline int _MarkSocketNonBlocking(NetSocket socket);
 
-static inline int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params);
+static inline int _InitSocket(NetSocket *pSocket, const NetCreateParams *params);
 
-static inline int _ConnectSocket(NetSocket socket, const NetConnectionParams *params);
+static inline int _ConnectSocket(NetSocket socket, const NetCreateParams *params);
 static inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *found);
 
 static inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out);
@@ -183,7 +183,7 @@ static inline void *memclear(void *mem, size_t size) {
 
 #pragma region(lib funcs)
 
-errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
+errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	int result_code = 0;
 
 	client->socket = INVALID_SOCKET;
@@ -215,7 +215,7 @@ errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params) {
 	return result_code;
 }
 
-errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params) {
+errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 	int result_code = 0;
 
 
@@ -308,11 +308,11 @@ errno_t NetPollServer(NetServer *server) {
 	return _PollServerTCP(server);
 }
 
-const NetConnectionParams *NetClientGetConnectionParams(const NetClient *client) {
+const NetCreateParams *NetClientGetCreateParams(const NetClient *client) {
 	return &client->_internal->connection_params;
 }
 
-const NetConnectionParams *NetServerGetConnectionParams(const NetServer *server) {
+const NetCreateParams *NetServerGetCreateParams(const NetServer *server) {
 	return &server->_internal->connection_params;
 }
 
@@ -463,7 +463,7 @@ inline int _StopNetService() {
 
 inline errno_t _PollServerUDP(NetServer *server) {
 	NetAddress address = {0};
-	address.type = NetServerGetConnectionParams(server)->address_type;
+	address.type = NetServerGetCreateParams(server)->address_type;
 
 	while (true)
 	{
@@ -671,7 +671,7 @@ inline NetAddressType _NativeToAddressType(short type) {
 	}
 }
 
-inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
+inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 													 const CallUseAddressProc proc, const char *context) {
 
 	NetAddress address = {0};
@@ -724,7 +724,7 @@ inline int _CallUseAddress(NetSocket socket, const NetConnectionParams *params,
 	return EOK;
 }
 
-int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
+int _CreateSocket(NetSocket *pSocket, const NetCreateParams *params) {
 	*pSocket = socket(
 		_AddressTypeToNative(params->address_type),
 		_ConnectionProtocolToNativeST(params->connection_protocol),
@@ -743,7 +743,7 @@ int _CreateSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	return EOK;
 }
 
-int _BindSocket(const NetSocket socket, const NetConnectionParams *params) {
+int _BindSocket(const NetSocket socket, const NetCreateParams *params) {
 	return _CallUseAddress(socket, params, bind, "binding socket");
 }
 
@@ -782,7 +782,7 @@ int _MarkSocketNonBlocking(NetSocket socket) {
 	return EOK;
 }
 
-int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
+int _InitSocket(NetSocket *pSocket, const NetCreateParams *params) {
 	int result_code = 0;
 
 	result_code = _CreateSocket(pSocket, params);
@@ -797,7 +797,7 @@ int _InitSocket(NetSocket *pSocket, const NetConnectionParams *params) {
 	return result_code;
 }
 
-inline int _ConnectSocket(NetSocket socket, const NetConnectionParams *params) {
+inline int _ConnectSocket(NetSocket socket, const NetCreateParams *params) {
 	return _CallUseAddress(socket, params, connect, "connecting socket");
 }
 

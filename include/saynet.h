@@ -55,7 +55,7 @@ typedef SAYNET_ENUM NetAddressType
 
 
 typedef char NetAddressBuffer[NetAddressBufferSize];
-typedef struct NetConnectionParams
+typedef struct NetCreateParams
 {
 	NetConnectionProtocol connection_protocol;
 
@@ -65,7 +65,7 @@ typedef struct NetConnectionParams
 	NetAddressBuffer address;
 	NetPort port;
 
-} NetConnectionParams;
+} NetCreateParams;
 
 typedef struct NetAddress
 {
@@ -97,6 +97,8 @@ typedef struct NetClientIDListNode
 
 // will kick the client if the returns value is non-zero
 typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
+
+typedef void (*NetClientLeftProc)(const struct NetClientID *client_id);
 
 /// @brief TCP receive callback for servers
 /// @return if the return value is not zero, then the client will know that the packet is bad (or such)
@@ -131,6 +133,9 @@ typedef struct NetServer
 	// client joined callback (TCP)
 	NetClientJoinedProc proc_client_joined;
 
+	// client left callback (TCP)
+	NetClientLeftProc proc_client_left;
+
 	// TCP receive proc
 	NetClientRecvProc proc_client_recv;
 
@@ -147,8 +152,8 @@ typedef struct NetServer
 extern "C" {
 #endif
 
-	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetConnectionParams *params);
-	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetConnectionParams *params);
+	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetCreateParams *params);
+	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetCreateParams *params);
 
 	SAYNET_API errno_t NetCloseClient(NetClient *client);
 	SAYNET_API errno_t NetCloseServer(NetServer *server);
@@ -156,8 +161,8 @@ extern "C" {
 	SAYNET_API errno_t NetPollClient(NetClient *client);
 	SAYNET_API errno_t NetPollServer(NetServer *server);
 
-	SAYNET_API const NetConnectionParams *NetClientGetConnectionParams(const NetClient *client);
-	SAYNET_API const NetConnectionParams *NetServerGetConnectionParams(const NetServer *server);
+	SAYNET_API const NetCreateParams *NetClientGetCreateParams(const NetClient *client);
+	SAYNET_API const NetCreateParams *NetServerGetCreateParams(const NetServer *server);
 
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
 	/// @return error if failed, zero at success
