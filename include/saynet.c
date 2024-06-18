@@ -11,14 +11,18 @@
 
 // #pragma comment(lib, "Ws2_32.lib")
 
+#define OUT
+#define INOUT
+
 #define EOK 0
+
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
 #define ASSERT_CLIENT_CREATION(code) if ((code) != EOK) \
 {return code; _AbortClient(client, "creation failure");}
 
 #define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
-{return code;} // TODO: implement a server abort function
+{return code; _AbortServer(server, "creation failure");} 
 
 #define VERBOSE(...) printf(__VA_ARGS__)
 
@@ -134,7 +138,11 @@ static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
 // sets the max msg size, Has no meaning for stream oriented sockets
 static inline int _SetMaxMessageSize(NetSocket socket, int new_size);
 
-static inline int _ReportError(int code, const char *format, ...);
+// will not display the code if it's EOK
+static inline int _Error(int code, const char *format, ...);
+// will not display the code if it's EOK
+static inline int _Warning(int code, const char *format, ...);
+
 static inline void _PutColor(FILE *fp, ConsoleColor color);
 
 static inline NetInternalData *_CreateInternalData();
@@ -160,6 +168,10 @@ static inline int _HostNameToAddressList(NetPort port, NetAddressType address_ty
 
 static inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, int length);
 static inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr);
+
+static inline int _ProcessGeneralCreateParams(NetCreateParams *params);
+static inline int _ProcessServerCreateParams(NetCreateParams *params);
+static inline int _ProcessClientCreateParams(NetCreateParams *params);
 
 // removes it from the linked list and returns it
 // returns null if no match can be found
@@ -190,18 +202,29 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 
 	_DestroyInternalData(client->_internal);
 	client->_internal = _CreateInternalData();
+
+	NetCreateParams processed_params = *params;
+
+	// replaced 'params' by 'processed_params'
+	{
+		result_code = _ProcessClientCreateParams(params);
+		ASSERT_CLIENT_CREATION(result_code);
+		params = &processed_params;
+	}
+
+
 	client->_internal->connection_params = *params;
 
 	result_code = _StartNetService();
 	ASSERT_CLIENT_CREATION(result_code);
 
 
-	_HostNameToAddressList(params->port, params->address_type, params->connection_protocol, NULL);
+	_HostNameToAddressList(params->address.port, params->address.type, params->protocol, NULL);
 
 	result_code = _CreateSocket(&client->socket, params);
 	ASSERT_CLIENT_CREATION(result_code);
 
-	if (params->connection_protocol == eNConnectProto_TCP)
+	if (params->protocol == eNConnectProto_TCP)
 	{
 		result_code = _ConnectSocket(client->socket, params);
 		ASSERT_CLIENT_CREATION(result_code);
@@ -223,6 +246,16 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 
 	_DestroyInternalData(server->_internal);
 	server->_internal = _CreateInternalData();
+
+	NetCreateParams processed_params = *params;
+
+	// replaced 'params' by 'processed_params'
+	{
+		result_code = _ProcessClientCreateParams(params);
+		ASSERT_SERVER_CREATION(result_code);
+		params = &processed_params;
+	}
+
 	server->_internal->connection_params = *params;
 
 	result_code = _StartNetService();
@@ -232,7 +265,7 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 	result_code = _InitSocket(&server->socket, params);
 	ASSERT_SERVER_CREATION(result_code);
 
-	if (params->connection_protocol == eNConnectProto_TCP)
+	if (params->protocol == eNConnectProto_TCP)
 	{
 		result_code = _SocketToListen(server->socket);
 		ASSERT_SERVER_CREATION(result_code);
@@ -292,7 +325,7 @@ errno_t NetPollServer(NetServer *server) {
 	// not dealing with overflows in casts (int <-> size_t)
 	if (server->_internal->recv_buffer_sz >= INT32_MAX)
 	{
-		return _ReportError(
+		return _Error(
 			E2BIG,
 
 			"server receive buffer is too big, buffer size is %llu bytes, max size is %d bytes",
@@ -300,7 +333,7 @@ errno_t NetPollServer(NetServer *server) {
 		);
 	}
 
-	if (server->_internal->connection_params.connection_protocol != eNConnectProto_TCP)
+	if (server->_internal->connection_params.protocol != eNConnectProto_TCP)
 	{
 		return _PollServerUDP(server);
 	}
@@ -356,7 +389,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 			_AbortClient(client, "hard error");
 		}
 
-		return _ReportError(
+		return _Error(
 			error,
 
 			"client failed to send (UDP) buffer %p, length %llu bytes in socket %llu to \"%s\":%d",
@@ -385,7 +418,7 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 			_AbortClient(client, "server disconnected");
 		}
 
-		return _ReportError(
+		return _Error(
 			error,
 
 			"client failed to send buffer %p, length %llu bytes in socket %llu",
@@ -402,7 +435,7 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 
 	if (node == NULL)
 	{
-		return _ReportError(
+		return _Error(
 			ENOENT,
 
 			"No client has the id {socket=%llu, address=\"%.*s\"}",
@@ -436,7 +469,7 @@ inline int _StartNetService() {
 
 	if (result != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"wsa startup failed, net service can't be run"
@@ -451,7 +484,7 @@ inline int _StopNetService() {
 
 	if (result != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
@@ -463,7 +496,7 @@ inline int _StopNetService() {
 
 inline errno_t _PollServerUDP(NetServer *server) {
 	NetAddress address = {0};
-	address.type = NetServerGetCreateParams(server)->address_type;
+	address.type = NetServerGetCreateParams(server)->address.type;
 
 	while (true)
 	{
@@ -676,10 +709,10 @@ inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 
 	NetAddress address = {0};
 
-	address.type = params->address_type;
+	address.type = params->address.type;
 	memcpy(
 		address.name,
-		params->address,
+		params->address.name,
 		ARRAYSIZE(address.name)
 	);
 
@@ -687,15 +720,15 @@ inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 
 	int result_code = -1;
 
-	result_code = _ConvertNetAddressToSockInAddr(&address, htons(params->port), &sock_addr);
+	result_code = _ConvertNetAddressToSockInAddr(&address, htons(params->address.port), &sock_addr);
 
 	if (result_code != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			result_code,
 
 			"failed to encode address \"%s\" port %d",
-			address.name, params->port
+			address.name, params->address.port
 		);
 	}
 
@@ -710,14 +743,14 @@ inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 	if (result_code != EOK)
 	{
 		result_code = _GetLastNetError();
-		return _ReportError(
+		return _Error(
 			result_code,
 
 			"%s: failed; socket=%llu, address=\"%s\", port=%d",
 			context,
 			socket,
 			address.name,
-			params->port
+			params->address.port
 		);
 	}
 
@@ -726,14 +759,14 @@ inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 
 int _CreateSocket(NetSocket *pSocket, const NetCreateParams *params) {
 	*pSocket = socket(
-		_AddressTypeToNative(params->address_type),
-		_ConnectionProtocolToNativeST(params->connection_protocol),
-		_ConnectionProtocolToNativeIP(params->connection_protocol)
+		_AddressTypeToNative(params->address.type),
+		_ConnectionProtocolToNativeST(params->protocol),
+		_ConnectionProtocolToNativeIP(params->protocol)
 	);
 
 	if (*pSocket == INVALID_SOCKET)
 	{
-		return _ReportError(_GetLastNetError(), "Failed to create a socket");
+		return _Error(_GetLastNetError(), "Failed to create a socket");
 	}
 
 	// FIXME: make this configurable by the user
@@ -752,7 +785,7 @@ int _SocketToListen(NetSocket socket) {
 
 	if (result_code != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			result_code,
 
 			"failed to make a socket (%llu) listen to connection",
@@ -771,7 +804,7 @@ int _MarkSocketNonBlocking(NetSocket socket) {
 
 	if (result_code != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			result_code,
 
 			"marking the socket %llu as non-blocking failed",
@@ -818,7 +851,7 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 			return EOK;
 		}
 
-		return _ReportError(
+		return _Error(
 			error,
 
 			"something happened while accepting connections to socket %llu",
@@ -861,7 +894,7 @@ inline int _GetSocketAddr(NetSocket socket, NetAddressBuffer *address_out) {
 
 	if (result != EOK)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"failed to get the socket address of socket %llu",
@@ -909,7 +942,7 @@ inline int _RecvFromSocket(NetSocket socket, uint8_t *data, int *size) {
 			*size = -2;
 		}
 
-		return _ReportError(
+		return _Error(
 			error,
 
 			"failed to receive data to buffer [%p, len=%d] from socket %llu",
@@ -971,7 +1004,7 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *a
 			*size = -1;
 		}
 
-		return _ReportError(
+		return _Error(
 			error,
 
 			"recvfrom failed and didn't return the any address as buffer [%p, len=%d] from socket %llu (UDP)",
@@ -1001,7 +1034,7 @@ inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
 	result_code = setsockopt(socket, SOL_SOCKET, SO_RCVBUF, (const char *)&new_size, sizeof(new_size));
 	if (result_code == SOCKET_ERROR)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"failed to set the SO_RCVBUF for the socket %llu to %d",
@@ -1013,7 +1046,7 @@ inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
 	result_code = setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (const char *)&new_size, sizeof(new_size));
 	if (result_code == SOCKET_ERROR)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"failed to set the SO_SNDBUF for the socket %llu to %d",
@@ -1038,7 +1071,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 
 	if (result_code == SOCKET_ERROR)
 	{
-		return _ReportError(
+		return _Error(
 			_GetLastNetError(),
 
 			"failed to set the SO_MAX_MSG_SIZE for the socket %llu to %d",
@@ -1051,10 +1084,40 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 }
 
 /// @returns any value passed in `code`
-int _ReportError(int code, const char *format, ...) {
-
+int _Error(int code, const char *format, ...) {
 	_PutColor(stdout, eFGClr_Red);
-	printf("ERR[%s]: ", _GetErrorName(code));
+
+	if (code == EOK)
+	{
+		fputs("ERR::", stdout);
+	}
+	else
+	{
+		printf("ERR[%s]:: ", _GetErrorName(code));
+	}
+
+	va_list va_list;
+	va_start(va_list, format);
+	vprintf(format, va_list);
+	va_end(va_list);
+
+	_PutColor(stdout, eFGClr_Clear);
+	fputc('\n', stdout);
+
+	return code;
+}
+
+inline int _Warning(int code, const char *format, ...) {
+	PutColor(stdout, eFGClr_Red);
+
+	if (code == EOK)
+	{
+		fputs("WRN::", stdout);
+	}
+	else
+	{
+		printf("WRN[%s]:: ", _GetErrorName(code));
+	}
 
 	va_list va_list;
 	va_start(va_list, format);
@@ -1075,7 +1138,7 @@ inline NetInternalData *_CreateInternalData() {
 	NetInternalData *data = malloc(sizeof(*data));
 	if (data == NULL)
 	{
-		_ReportError(ENOMEM, "failed to allocate internal data");
+		_Error(ENOMEM, "failed to allocate internal data");
 		exit(ENOMEM);
 		return NULL;
 	}
@@ -1085,7 +1148,7 @@ inline NetInternalData *_CreateInternalData() {
 
 	if (data->recv_buffer == NULL)
 	{
-		_ReportError(ENOMEM, "failed to allocate recv buffer: size=%llu bytes", data->recv_buffer_sz);
+		_Error(ENOMEM, "failed to allocate recv buffer: size=%llu bytes", data->recv_buffer_sz);
 		exit(ENOMEM);
 		return NULL;
 	}
@@ -1117,13 +1180,13 @@ inline void _CloseSocket(NetSocket socket) {
 
 inline void _AbortServer(NetServer *server, const char *reason) {
 	// TODO: colorize/use colorized print function to something like YELLOW
-	_ReportError(E_ABORT, "server: aborted hosting: reason=\"%s\"\n", reason);
+	_Error(E_ABORT, "server: aborted hosting: reason=\"%s\"\n", reason);
 	NetCloseServer(server);
 }
 
 inline void _AbortClient(NetClient *client, const char *reason) {
 	// TODO: colorize/use colorized print function to something like YELLOW
-	_ReportError(E_ABORT, "client: connection aborted: reason=\"%s\"\n", reason);
+	_Error(E_ABORT, "client: connection aborted: reason=\"%s\"\n", reason);
 	NetCloseClient(client);
 }
 
@@ -1133,7 +1196,7 @@ inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id) {
 	if (node == NULL)
 	{
 		exit(
-			_ReportError(
+			_Error(
 				ENOMEM,
 
 				"failed to allocate a client id list node for client id: socket=%llu address=\"%.*s\"",
@@ -1303,7 +1366,7 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 	if (error_code != EOK)
 	{
 		// error code is not contained withing _GetLastNetError()
-		return _ReportError(
+		return _Error(
 			error_code,
 
 			"getaddrinfo(\"%d\", NULL, %p, %p) failed",
@@ -1378,6 +1441,99 @@ inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr) {
 	}
 
 	return result;
+}
+
+inline int _ProcessGeneralCreateParams(NetCreateParams *params) {
+
+	if (params->proc_mem_alloc == NULL)
+	{
+		params->proc_mem_alloc = malloc;
+	}
+
+	if (params->proc_mem_free == NULL)
+	{
+		params->proc_mem_free = free;
+	}
+
+	if (params->protocol != eNConnectProto_TCP && params->protocol != eNConnectProto_UDP)
+	{
+		return _Error(
+			EPROTOTYPE,
+
+			"Unknown protocol type: %d",
+
+			params->protocol
+		);
+	}
+
+	if (params->address.type != eNAddrType_IPv4 && params->address.type != eNAddrType_IPv6)
+	{
+		return _Error(
+			EAFNOSUPPORT,
+
+			"Unsupported address type: %d",
+
+			params->address.type
+		);
+	}
+
+
+	for (int i = NetAddressBufferSize - 1; i >= 0; i--)
+	{
+		if (params->address.name[i] == 0)
+		{
+			break;
+		}
+
+		// last char, no null character insight
+		if (i == 0)
+		{
+			params->address.name[NetAddressBufferSize - 1] = 0;
+			(void)_Warning(
+				EBADF,
+				("create params's address (\"%s\") has no null termination,"
+				 " setting one at the address buffer's end"),
+				params->address.name
+			);
+		}
+	}
+
+	return EOK;
+}
+
+inline int _ProcessServerCreateParams(NetCreateParams *params) {
+	int result_code = 0;
+
+	result_code = _ProcessGeneralCreateParams(params);
+
+	if (result_code != EOK)
+	{
+		return result_code;
+	}
+
+	return EOK;
+}
+
+inline int _ProcessClientCreateParams(NetCreateParams *params) {
+	int result_code = 0;
+
+	result_code = _ProcessGeneralCreateParams(params);
+
+	if (result_code != EOK)
+	{
+		return result_code;
+	}
+
+	if (params->broadcast)
+	{
+		return _Error(
+			EFAULT,
+
+			"params->broadcast is true, client objects can't broadcast, use a server object instead"
+		);
+	}
+
+	return EOK;
 }
 
 inline NetClientIDListNode *_ExtractNodeWithClientID(NetClientIDListNode **p_first, const NetClientID *client_id) {

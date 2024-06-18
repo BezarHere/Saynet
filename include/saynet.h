@@ -53,19 +53,7 @@ typedef SAYNET_ENUM NetAddressType
 	eNAddrType_IPv6,
 } NetAddressType;
 
-
 typedef char NetAddressBuffer[NetAddressBufferSize];
-typedef struct NetCreateParams
-{
-	NetConnectionProtocol connection_protocol;
-
-	NetAddressType address_type;
-	// null terminated address, can be ipv4 (XX.XX.XX.XX) or ipv6 (NN:NN:...)
-	// setting all bytes to '0' will make saynet treat it as take any available address
-	NetAddressBuffer address;
-	NetPort port;
-
-} NetCreateParams;
 
 typedef struct NetAddress
 {
@@ -79,6 +67,26 @@ typedef struct NetUserAddress
 	NetAddressBuffer name;
 	NetPort port;
 } NetUserAddress;
+
+typedef void *(*NetMemoryAllocProc)(const size_t size);
+typedef void (*NetMemoryFreeProc)(void *ptr);
+
+typedef struct NetCreateParams
+{
+	NetConnectionProtocol protocol;
+
+	NetUserAddress address;
+
+	// set to true to make this a broadcast server (NOTE: ONLY WORKS ON SERVERS)
+	// broadcast servers skip the address and the protocol altogether
+	bool broadcast;
+
+	// function to call internally to allocate memory, leave as NULL for the internal implementation
+	NetMemoryAllocProc proc_mem_alloc;
+
+	// function to call internally to free memory, leave as NULL for the internal implementation
+	NetMemoryAllocProc proc_mem_free;
+} NetCreateParams;
 
 typedef struct NetClientID
 {
@@ -190,5 +198,5 @@ extern "C" {
 	}
 
 #ifdef __cplusplus
-	}
+}
 #endif
