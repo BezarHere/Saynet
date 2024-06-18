@@ -81,6 +81,11 @@ typedef struct NetCreateParams
 	// broadcast servers skip the address and the protocol altogether
 	bool broadcast;
 
+	// max number of clients that can be waiting to join (SERVER EXCLUSIVE, CLIENTS IGNORE VALUE)
+	// clients will only be able to join when the server polls (you can deny acceptance using the callback)
+	// set to zero to use the default value (driver/network service dependent)
+	uint16_t max_listen_backlog;
+
 	// function to call internally to allocate memory, leave as NULL for the internal implementation
 	NetMemoryAllocProc proc_mem_alloc;
 

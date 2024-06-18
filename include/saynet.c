@@ -6,10 +6,31 @@
 #include <stdbool.h>
 #include <string.h>
 
+#ifdef _WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#define NOSERVICE
+#define NOMCX
+#define NOIME
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#undef NOSERVICE
+#undef NOMCX
+#undef NOIME
+
+#else
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+
 // #pragma comment(lib, "Ws2_32.lib")
+
+#ifdef _WIN32
+#define WSA_NETWORK
+#endif
 
 #define OUT
 #define INOUT
@@ -45,7 +66,12 @@ enum
 	DefaultRecvBufferSz = 0x10000,
 	MaxInactivityHits = 2500,
 
-	MaxAddressListSize = 24
+	MaxAddressListSize = 24,
+
+	// max number of net objects (clients + servers)
+	MaxNetServiceKeys = 32,
+	// the value of an empty key
+	ServiceEmptyKey = 0,
 };
 
 typedef enum ConsoleColor
@@ -78,10 +104,14 @@ typedef struct SockInAddress
 	int length;
 } SockInAddress;
 
+typedef uint64_t ServiceKey;
+
 typedef struct NetInternalData
 {
 	size_t recv_buffer_sz;
 	uint8_t *recv_buffer;
+
+	ServiceKey service_key;
 
 	NetCreateParams connection_params;
 } NetInternalData;
@@ -101,10 +131,26 @@ typedef struct AddressList
 
 typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
 
-static WSADATA g_wsa;
+static struct NetService
+{
+#ifdef WSA_NETWORK
+	WSADATA wsa;
+#endif
+	ServiceKey keys[MaxNetServiceKeys];
+} g_service = {};
 
-static inline int _StartNetService();
-static inline int _StopNetService();
+static inline int _LoadNetService(OUT ServiceKey *key);
+static inline int _UnloadNetService(ServiceKey key);
+
+static inline ServiceKey S_CreateKey();
+static inline ServiceKey S_GenerateUniqueKey(size_t pos);
+
+static inline bool S_ServiceHasKeys();
+static inline size_t S_ServiceKeyCount();
+// -1 if not found
+static inline int S_ServiceFindKey(ServiceKey key);
+// -1 if non are found
+static inline int S_ServiceFindEmptyKey();
 
 static inline errno_t _PollServerUDP(NetServer *server);
 static inline errno_t _PollServerTCP(NetServer *server);
@@ -199,10 +245,6 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	int result_code = 0;
 
 	client->socket = INVALID_SOCKET;
-
-	_DestroyInternalData(client->_internal);
-	client->_internal = _CreateInternalData();
-
 	NetCreateParams processed_params = *params;
 
 	// replaced 'params' by 'processed_params'
@@ -212,10 +254,11 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 		params = &processed_params;
 	}
 
-
+	_DestroyInternalData(client->_internal);
+	client->_internal = _CreateInternalData();
 	client->_internal->connection_params = *params;
 
-	result_code = _StartNetService();
+	result_code = _LoadNetService(&client->_internal->service_key);
 	ASSERT_CLIENT_CREATION(result_code);
 
 
@@ -242,10 +285,6 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 	int result_code = 0;
 
 	server->socket = INVALID_SOCKET;
-
-	_DestroyInternalData(server->_internal);
-	server->_internal = _CreateInternalData();
-
 	NetCreateParams processed_params = *params;
 
 	// replaced 'params' by 'processed_params'
@@ -255,9 +294,11 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 		params = &processed_params;
 	}
 
+	_DestroyInternalData(server->_internal);
+	server->_internal = _CreateInternalData();
 	server->_internal->connection_params = *params;
 
-	result_code = _StartNetService();
+	result_code = _LoadNetService(&server->_internal->service_key);
 	ASSERT_SERVER_CREATION(result_code);
 
 
@@ -280,16 +321,22 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 }
 
 errno_t NetCloseClient(NetClient *client) {
+	// TODO: check return value
+	_UnloadNetService(client->_internal->service_key);
+
 	_DestroyInternalData(client->_internal);
 	client->_internal = NULL;
 
 	_CloseSocket(client->socket);
 	client->socket = INVALID_SOCKET;
 
-	return _StopNetService();
+	return EOK;
 }
 
 errno_t NetCloseServer(NetServer *server) {
+	// TODO: check return value
+	_UnloadNetService(server->_internal->service_key);
+
 	_DestroyInternalData(server->_internal);
 
 	{
@@ -308,7 +355,7 @@ errno_t NetCloseServer(NetServer *server) {
 
 	}
 
-	return _StopNetService();
+	return EOK;
 }
 
 errno_t NetPollClient(NetClient *client) {
@@ -463,10 +510,38 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 
 #pragma region(utility)
 
-inline int _StartNetService() {
-	int result = WSAStartup(MAKEWORD(2, 2), &g_wsa);
+inline int _LoadNetService(OUT ServiceKey *key) {
+	const bool already_started = S_ServiceHasKeys();
 
-	if (result != EOK)
+	// output key
+	{
+		ServiceKey new_key = S_CreateKey();
+
+		if (new_key == ServiceEmptyKey)
+		{
+			return _Error(
+				ENOSPC,
+
+				"couldn't create a SAYNET service key; svc key count=%llu, max key count=%d",
+				S_ServiceKeyCount(),
+				MaxNetServiceKeys
+			);
+		}
+
+		*key = new_key;
+	}
+
+	if (already_started)
+	{
+		return EOK;
+	}
+
+	int result_code = EOK;
+
+#ifdef WSA_NETWORK
+	result_code = WSAStartup(WINSOCK_VERSION, &g_service.wsa);
+
+	if (result_code != EOK)
 	{
 		return _Error(
 			_GetLastNetError(),
@@ -474,14 +549,42 @@ inline int _StartNetService() {
 			"wsa startup failed, net service can't be run"
 		);
 	}
+#endif
 
 	return EOK;
 }
 
-inline int _StopNetService() {
-	int result = WSACleanup();
+inline int _UnloadNetService(const ServiceKey key) {
 
-	if (result != EOK)
+	// clear key
+	{
+		const int key_pos = S_ServiceFindKey(key);
+
+		if (key_pos == -1)
+		{
+			return _Error(
+				ENOENT,
+
+				"no valid service key found with the value %llu, svc key count=%llu",
+				key, S_ServiceKeyCount()
+			);
+		}
+
+		g_service.keys[key_pos] = ServiceEmptyKey;
+	}
+
+	// if there is still some service keys, do not close the library
+	if (S_ServiceHasKeys())
+	{
+		return EOK;
+	}
+
+	int result_code = EOK;
+
+#ifdef WSA_NETWORK
+	result_code = WSACleanup();
+
+	if (result_code != EOK)
 	{
 		return _Error(
 			_GetLastNetError(),
@@ -489,8 +592,84 @@ inline int _StopNetService() {
 			"wsa cleanup failed, what did you do for this? this shouldn't happen normally"
 		);
 	}
+#endif
 
 	return EOK;
+}
+
+inline ServiceKey S_CreateKey() {
+	for (size_t i = 0; i < MaxNetServiceKeys; i++)
+	{
+		if (g_service.keys[i] == ServiceEmptyKey)
+		{
+			g_service.keys[i] = S_GenerateUniqueKey(i);
+
+			return g_service.keys[i];
+		}
+	}
+
+	return ServiceEmptyKey;
+}
+
+inline ServiceKey S_GenerateUniqueKey(size_t pos) {
+	static const ServiceKey init_seed = (ServiceKey)0x283b5d77b3d5113b;
+	return _rotl64(init_seed, (int)pos) ^ ~_rotl64(init_seed + pos, -(int)pos);
+}
+
+inline bool S_ServiceHasKeys() {
+	for (size_t i = 0; i < MaxNetServiceKeys; i++)
+	{
+		if (g_service.keys[i] == ServiceEmptyKey)
+		{
+			continue;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+inline size_t S_ServiceKeyCount() {
+	size_t count = 0;
+
+	for (size_t i = 0; i < MaxNetServiceKeys; i++)
+	{
+		if (g_service.keys[i] == ServiceEmptyKey)
+		{
+			continue;
+		}
+
+		count++;
+	}
+
+	return count;
+}
+
+inline int S_ServiceFindKey(const ServiceKey key) {
+
+	for (int i = 0; i < MaxNetServiceKeys; i++)
+	{
+		if (g_service.keys[i] == key)
+		{
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+inline int S_ServiceFindEmptyKey() {
+
+	for (int i = 0; i < MaxNetServiceKeys; i++)
+	{
+		if (g_service.keys[i] == ServiceEmptyKey)
+		{
+			return i;
+		}
+	}
+
+	return -1;
 }
 
 inline errno_t _PollServerUDP(NetServer *server) {
@@ -516,7 +695,7 @@ inline errno_t _PollServerUDP(NetServer *server) {
 			break;
 		}
 
-		VERBOSE("received %d bytes on udp", size);
+		VERBOSE("received %d bytes on udp\n", size);
 
 		if (result_code != EOK)
 		{
@@ -538,7 +717,7 @@ inline errno_t _PollServerUDP(NetServer *server) {
 			NetPacketData data = {0};
 
 			data.data = server->_internal->recv_buffer;
-			data.size = server->_internal->recv_buffer_sz;
+			data.size = size;
 
 			const int callback_recv_result = server->proc_udp_recv(&address, data);
 
@@ -635,7 +814,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 
 		if (size > 0 && server->proc_client_recv)
 		{
-			NetPacketData packet;
+			NetPacketData packet = {};
 
 			packet.data = server->_internal->recv_buffer;
 			packet.size = size;
@@ -967,6 +1146,10 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *a
 	enum { recvfrom_flags = 0 };
 	// value of (*size) at the head of the function, prior to any modifications 
 	const int original_size = *size;
+
+	// make sure the input buffer size isn't output-ed
+	// imagine having a buffer 64KB and suddenly an empty 64KB message arrives?
+	*size = 0;
 
 	memclear(address->name, ARRAYSIZE(address->name));
 
