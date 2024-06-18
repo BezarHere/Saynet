@@ -1,2 +1,3 @@
-output/**
-output/*
+
+output/cache/*
+output/*.exe
