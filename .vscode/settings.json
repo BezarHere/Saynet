@@ -2,8 +2,14 @@
 	"cSpell.words": [
 		"ARRAYSIZE",
 		"endregion",
+		"htol",
 		"ioctlsocket",
 		"memclear",
-		"SAYNET"
+		"NOSERVICE",
+		"SAYNET",
+		"STRUNCATE",
+		"ultoa",
+		"WSADATA",
+		"WSAESHUTDOWN"
 	]
 }
