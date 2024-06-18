@@ -5,12 +5,13 @@
 
 #include <Windows.h>
 
-static bool received_data = false;
+static bool close_requested = false;
+static void client_left(const NetClientID *client_id);
 static int receive_data(const NetClientID *client_id, NetPacketData data);
 static int receive_data_udp(const NetAddress *address, NetPacketData data) {
 	NetClientID client_id = {};
-	strcpy_s(client_id.address, address->name);
-	client_id.address_type = address->type;
+	strcpy_s(client_id.address.name, address->name);
+	client_id.address.type = address->type;
 
 	return receive_data(&client_id, data);
 }
@@ -20,10 +21,10 @@ int main() {
 	char c = 0;
 	std::cin >> c;
 
-	NetConnectionParams params;
-	params.address_type = NetAddressType::eNAddrType_IPv4;
-	params.port = 0x1111;
-	params.connection_protocol = NetConnectionProtocol::eNConnectProto_UDP;
+	NetCreateParams params = {};
+	params.address.type = NetAddressType::eNAddrType_IPv4;
+	params.address.port = 0x1111;
+	params.protocol = NetConnectionProtocol::eNConnectProto_TCP;
 
 	if (c == 's')
 	{
@@ -32,12 +33,13 @@ int main() {
 		NetServer server = {0};
 		server.proc_client_recv = receive_data;
 		server.proc_udp_recv = receive_data_udp;
+		server.proc_client_left = client_left;
 
-		memset(params.address, 0, std::size(params.address));
+		memset(params.address.name, 0, std::size(params.address.name));
 
 		NetOpenServer(&server, &params);
 
-		while (!received_data && NetIsServerValid(&server))
+		while (!close_requested && NetIsServerValid(&server))
 		{
 			NetPollServer(&server);
 			Sleep(50);
@@ -58,25 +60,25 @@ int main() {
 		std::cin >> str;
 
 
-		strncpy(params.address, str.c_str(), std::size(params.address));
+		strncpy(params.address.name, str.c_str(), std::size(params.address.name));
 
-		params.port += 1;
+		params.address.port += 1;
 		NetOpenClient(&client, &params);
 
 
 		NetUserAddress user_address;
-		user_address.port = params.port - 1;
+		user_address.port = params.address.port - 1;
 
-		if (params.connection_protocol == NetConnectionProtocol::eNConnectProto_UDP)
+		if (params.protocol == NetConnectionProtocol::eNConnectProto_UDP)
 		{
-			user_address.type = params.address_type;
+			user_address.type = params.address.type;
 
 			std::cout << "send udp address (* for the server address): ";
 			std::cin >> str;
 
 			if (str == "*")
 			{
-				strcpy_s(user_address.name, params.address);
+				strcpy_s(user_address.name, params.address.name);
 			}
 			else
 			{
@@ -93,7 +95,7 @@ int main() {
 			if (!data.empty())
 			{
 				size_t size = data.size() + 1;
-				if (params.connection_protocol == NetConnectionProtocol::eNConnectProto_TCP)
+				if (params.protocol == NetConnectionProtocol::eNConnectProto_TCP)
 				{
 					NetClientSend(&client, data.c_str(), &size);
 				}
@@ -113,6 +115,10 @@ int main() {
 
 }
 
+void client_left(const NetClientID *client_id) {
+	close_requested = true;
+}
+
 int receive_data(const NetClientID *client_id, NetPacketData data) {
 	static constexpr std::array<char, 16> hex_arr = {
 		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
@@ -120,7 +126,8 @@ int receive_data(const NetClientID *client_id, NetPacketData data) {
 
 	constexpr char close_key[] = "close";
 
-	std::cout << "received " << data.size << " bytes from " << client_id->address << '\n';
+	// std::cout << "received " << data.size << " bytes from " << &client_id->address << '\n';
+	std::cout << "received " << data.size << " bytes from " << &client_id->address << '\n';
 
 	for (size_t i = 0; i < data.size; i++)
 	{
@@ -132,7 +139,7 @@ int receive_data(const NetClientID *client_id, NetPacketData data) {
 
 	if (strncmp((const char *)data.data, close_key, std::size(close_key) - 1) == 0)
 	{
-		received_data = true;
+		close_requested = true;
 		std::cout << "closing!\n";
 	}
 
