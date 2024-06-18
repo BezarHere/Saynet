@@ -84,7 +84,7 @@ typedef struct NetCreateParams
 	// max number of clients that can be waiting to join (SERVER EXCLUSIVE, CLIENTS IGNORE VALUE)
 	// clients will only be able to join when the server polls (you can deny acceptance using the callback)
 	// set to zero to use the default value (driver/network service dependent)
-	uint16_t max_listen_backlog;
+	uint32_t max_listen_backlog;
 
 	// function to call internally to allocate memory, leave as NULL for the internal implementation
 	NetMemoryAllocProc proc_mem_alloc;
@@ -96,8 +96,7 @@ typedef struct NetCreateParams
 typedef struct NetClientID
 {
 	NetSocket socket;
-	NetAddressType address_type;
-	NetAddressBuffer address;
+	NetAddress address;
 } NetClientID;
 
 typedef struct NetClientIDListNode
@@ -115,7 +114,7 @@ typedef void (*NetClientLeftProc)(const struct NetClientID *client_id);
 
 /// @brief TCP receive callback for servers
 /// @return if the return value is not zero, then the client will know that the packet is bad (or such)
-/// @see on UDP, see NetRecvProc
+/// @see on UDP, see NetUDPRecvProc
 /// @note packet data is owned/freed by saynet, copy the packet to a new buffer to keep after callback
 typedef int (*NetClientRecvProc)(const struct NetClientID *client_id, NetPacketData packet_data);
 
@@ -126,7 +125,7 @@ typedef int (*NetServerRecvProc)(NetPacketData packet_data);
 // UDP callback for receiving data packets
 // make sure to not accept data from malicious sources 
 // packet data is owned/freed by saynet, copy the packet to a new buffer to keep after callback
-typedef int (*NetRecvProc)(const NetAddress *address, NetPacketData packet_data);
+typedef int (*NetUDPRecvProc)(const NetAddress *address, NetPacketData packet_data);
 
 typedef struct NetInternalData *NetInternalHandle;
 
@@ -135,6 +134,7 @@ typedef struct NetClient
 	NetSocket socket;
 
 	NetServerRecvProc proc_server_recv;
+	NetUDPRecvProc proc_udp_recv;
 
 	NetInternalHandle _internal;
 } NetClient;
@@ -153,7 +153,7 @@ typedef struct NetServer
 	NetClientRecvProc proc_client_recv;
 
 	// UDP receive proc
-	NetRecvProc proc_udp_recv;
+	NetUDPRecvProc proc_udp_recv;
 
 	NetClientIDListNode *p_client_ids;
 
@@ -184,11 +184,19 @@ extern "C" {
 																				const NetUserAddress *address);
 
 	/// @brief send data to the server, only works in TCP (for UPD, see NetClientSendToUDP)
-	/// @param client 
-	/// @param data 
+	/// @param client the client that will send the data
+	/// @param data the data
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
 	/// @return error if failed, zero at success
 	SAYNET_API errno_t NetClientSend(NetClient *client, const void *data, size_t *size);
+
+	/// @brief send data to the server, only works in TCP (for UPD, see NetClientSendToUDP)
+	/// @param server the server that will send the data
+	/// @param client the client id that is going to receive the data 
+	/// @param data the data
+	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
+	/// @return error if failed, zero at success
+	SAYNET_API errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *size);
 
 	// 'reason' is not owned by the function
 	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);
