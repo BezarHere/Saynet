@@ -85,7 +85,7 @@ typedef struct NetCreateParams
 	NetMemoryAllocProc proc_mem_alloc;
 
 	// function to call internally to free memory, leave as NULL for the internal implementation
-	NetMemoryAllocProc proc_mem_free;
+	NetMemoryFreeProc proc_mem_free;
 } NetCreateParams;
 
 typedef struct NetClientID

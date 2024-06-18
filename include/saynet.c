@@ -207,7 +207,7 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 
 	// replaced 'params' by 'processed_params'
 	{
-		result_code = _ProcessClientCreateParams(params);
+		result_code = _ProcessClientCreateParams(&processed_params);
 		ASSERT_CLIENT_CREATION(result_code);
 		params = &processed_params;
 	}
@@ -241,7 +241,6 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 	int result_code = 0;
 
-
 	server->socket = INVALID_SOCKET;
 
 	_DestroyInternalData(server->_internal);
@@ -251,7 +250,7 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 
 	// replaced 'params' by 'processed_params'
 	{
-		result_code = _ProcessClientCreateParams(params);
+		result_code = _ProcessClientCreateParams(&processed_params);
 		ASSERT_SERVER_CREATION(result_code);
 		params = &processed_params;
 	}
@@ -1108,7 +1107,7 @@ int _Error(int code, const char *format, ...) {
 }
 
 inline int _Warning(int code, const char *format, ...) {
-	PutColor(stdout, eFGClr_Red);
+	_PutColor(stdout, eFGClr_Red);
 
 	if (code == EOK)
 	{
