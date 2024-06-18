@@ -7,11 +7,23 @@
 
 static bool received_data = false;
 static int receive_data(const NetClientID *client_id, NetPacketData data);
+static int receive_data_udp(const NetAddress *address, NetPacketData data) {
+	NetClientID client_id = {};
+	strcpy_s(client_id.address, address->name);
+	client_id.address_type = address->type;
+
+	return receive_data(&client_id, data);
+}
 
 int main() {
 	std::cout << "choose either 's' for server or 'c' for client: ";
 	char c = 0;
 	std::cin >> c;
+
+	NetConnectionParams params;
+	params.address_type = NetAddressType::eNAddrType_IPv4;
+	params.port = 0x1111;
+	params.connection_protocol = NetConnectionProtocol::eNConnectProto_UDP;
 
 	if (c == 's')
 	{
@@ -19,11 +31,8 @@ int main() {
 
 		NetServer server = {0};
 		server.proc_client_recv = receive_data;
+		server.proc_udp_recv = receive_data_udp;
 
-		NetConnectionParams params;
-		params.port = 8080;
-		params.connection_protocol = NetConnectionProtocol::eNConnectProto_TCP;
-		params.address_type = NetAddressType::eNAddrType_IP4;
 		memset(params.address, 0, std::size(params.address));
 
 		NetOpenServer(&server, &params);
@@ -43,17 +52,38 @@ int main() {
 
 		NetClient client = {0};
 
-		NetConnectionParams params;
-		params.port = 8080;
-		params.connection_protocol = NetConnectionProtocol::eNConnectProto_TCP;
-		params.address_type = NetAddressType::eNAddrType_IP4;
 
+		std::cout << "server address: ";
 		std::string str{};
 		std::cin >> str;
 
+
 		strncpy(params.address, str.c_str(), std::size(params.address));
 
+		params.port += 1;
 		NetOpenClient(&client, &params);
+
+
+		NetUserAddress user_address;
+		user_address.port = params.port - 1;
+
+		if (params.connection_protocol == NetConnectionProtocol::eNConnectProto_UDP)
+		{
+			user_address.type = params.address_type;
+
+			std::cout << "send udp address (* for the server address): ";
+			std::cin >> str;
+
+			if (str == "*")
+			{
+				strcpy_s(user_address.name, params.address);
+			}
+			else
+			{
+				strcpy_s(user_address.name, str.c_str());
+			}
+
+		}
 
 		while (NetIsClientValid(&client))
 		{
@@ -63,7 +93,14 @@ int main() {
 			if (!data.empty())
 			{
 				size_t size = data.size() + 1;
-				NetClientSend(&client, data.c_str(), &size);
+				if (params.connection_protocol == NetConnectionProtocol::eNConnectProto_TCP)
+				{
+					NetClientSend(&client, data.c_str(), &size);
+				}
+				else
+				{
+					NetClientSendToUDP(&client, data.c_str(), &size, &user_address);
+				}
 				std::cout << "sent " << size << " bytes!\n";
 			}
 
