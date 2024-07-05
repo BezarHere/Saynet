@@ -6,6 +6,7 @@
 #include <Windows.h>
 
 static bool close_requested = false;
+static int client_joined(const NetClientID *client_id);
 static void client_left(const NetClientID *client_id);
 static int receive_data(const NetClientID *client_id, NetPacketData data);
 static int receive_data_udp(const NetAddress *address, NetPacketData data) {
@@ -16,6 +17,13 @@ static int receive_data_udp(const NetAddress *address, NetPacketData data) {
 	return receive_data(&client_id, data);
 }
 
+static void *net_obj = nullptr;
+static const char *response =
+"HTTP/1.0 200 OK\nContent-type: text/html\n\nHELLO FROM SAYNET!!";
+static int client_joined_counter = 0;
+
+static void send_response(const NetClientID *ptr = nullptr);
+
 int main() {
 	std::cout << "choose either 's' for server or 'c' for client: ";
 	char c = 0;
@@ -23,7 +31,7 @@ int main() {
 
 	NetCreateParams params = {};
 	params.address.type = NetAddressType::eNAddrType_IPv4;
-	params.address.port = 0x1111;
+	params.address.port = 8080;
 	params.protocol = NetConnectionProtocol::eNConnectProto_TCP;
 
 	if (c == 's')
@@ -34,6 +42,9 @@ int main() {
 		server.proc_client_recv = receive_data;
 		server.proc_udp_recv = receive_data_udp;
 		server.proc_client_left = client_left;
+		server.proc_client_joined = client_joined;
+
+		net_obj = &server;
 
 		memset(params.address.name, 0, std::size(params.address.name));
 
@@ -45,6 +56,8 @@ int main() {
 			Sleep(50);
 		}
 
+
+
 		NetCloseServer(&server);
 	}
 
@@ -53,6 +66,7 @@ int main() {
 		std::cout << "starting client\n";
 
 		NetClient client = {0};
+		net_obj = &client;
 
 
 		std::cout << "server address: ";
@@ -115,6 +129,13 @@ int main() {
 
 }
 
+int client_joined(const NetClientID *client_id) {
+
+	// send_response(client_id);
+	// return client_joined_counter++;
+	return 0;
+}
+
 void client_left(const NetClientID *client_id) {
 	close_requested = true;
 }
@@ -127,9 +148,9 @@ int receive_data(const NetClientID *client_id, NetPacketData data) {
 	constexpr char close_key[] = "close";
 
 	// std::cout << "received " << data.size << " bytes from " << &client_id->address << '\n';
-	std::cout << "received " << data.size << " bytes from " << &client_id->address << '\n';
+	std::cout << "RECEIVED: " << data.size << " bytes from " << client_id->address.name << '\n';
 
-	for (size_t i = 0; i < data.size; i++)
+	for (size_t i = 0; i < std::min<size_t>(data.size, 32); i++)
 	{
 		// std::cout << (hex_arr[data.data[i] >> 4]) << (hex_arr[data.data[i] & 0xf]);
 		std::cout << (char)data.data[i];
@@ -141,7 +162,21 @@ int receive_data(const NetClientID *client_id, NetPacketData data) {
 	{
 		close_requested = true;
 		std::cout << "closing!\n";
+		return 0;
 	}
 
+	send_response();
+
 	return 0;
+}
+
+void send_response(const NetClientID *ptr) {
+	if (ptr == nullptr)
+	{
+		ptr = &((NetServer *)net_obj)->p_client_ids->client_id;
+	}
+
+	size_t length = strlen(response);
+	// NetServerSend(&server, &server.p_client_ids->client_id, response, &length);
+	NetServerSend((NetServer *)net_obj, ptr, response, &length);
 }

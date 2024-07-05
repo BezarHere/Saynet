@@ -39,6 +39,8 @@
 
 #define EOK 0
 
+#define BOOL_ALPHA(cond) ((cond) ? "true" : "false")
+
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
 
 #define ASSERT_CLIENT_CREATION(code) if ((code) != EOK) \
@@ -99,15 +101,15 @@ typedef struct InAddress
 	int length;
 } InAddress;
 
-typedef struct SockInAddress
+typedef struct SocketAddress
 {
-	union _SockInAddress_data
+	union _SocketAddress_data
 	{
 		SOCKADDR_IN addr;
 		SOCKADDR_IN6 addr6;
 	} data;
 	int length;
-} SockInAddress;
+} SocketAddress;
 
 typedef uint64_t ServiceKey;
 
@@ -124,7 +126,7 @@ typedef struct NetInternalData
 typedef struct AddressListNode
 {
 	NetAddress net_address;
-	SockInAddress sock_inaddr;
+	SocketAddress sock_inaddr;
 	InAddress inaddr;
 } AddressListNode;
 
@@ -134,15 +136,30 @@ typedef struct AddressList
 	AddressListNode data[MaxAddressListSize];
 } AddressList;
 
-typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
+typedef struct SocketInfo
+{
+	NetAddressType type;
+	NetConnectionProtocol protocol;
+	SocketAddress local_address;
+	SocketAddress remote_address;
+} SocketInfo;
 
 static struct NetService
 {
 #ifdef WSA_NETWORK
 	WSADATA wsa;
 #endif
+	struct NetServiceNode
+	{
+		NetInternalData *internal;
+		ServiceKey key;
+	};
+
+	// TODO: replace this with an array of NetServiceNodes
 	ServiceKey keys[MaxNetServiceKeys];
 } g_service = {};
+
+typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
 
 static inline int _LoadNetService(OUT ServiceKey *key);
 static inline int _UnloadNetService(ServiceKey key);
@@ -172,6 +189,8 @@ static inline int _CreateSocket(NetSocket *pSocket, const NetCreateParams *param
 static inline int _BindSocket(NetSocket socket, const NetCreateParams *params);
 static inline int _SocketToListen(NetSocket socket, const NetCreateParams *params);
 static inline int _MarkSocketNonBlocking(NetSocket socket);
+static inline int _SocketSetBlocking(NetSocket socket, bool value);
+static inline int _SocketSetBroadcast(NetSocket socket, bool value);
 
 static inline int _InitSocket(NetSocket *pSocket, const NetCreateParams *params);
 
@@ -194,7 +213,7 @@ static inline int _Error(int code, const char *format, ...);
 // will not display the code if it's EOK
 static inline int _Warning(int code, const char *format, ...);
 
-static inline void _PutColor(FILE *fp, ConsoleColor color);
+static inline void _PutColor(FILE *out_fp, ConsoleColor color);
 
 static inline NetInternalData *_CreateInternalData();
 static inline void _DestroyInternalData(NetInternalData *ptr);
@@ -211,14 +230,16 @@ static inline void _FreeClientIDNode(NetClientIDListNode *node);
 static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
 static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output);
 static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
-																								 SockInAddress *output);
+																								 SocketAddress *output);
+
+static inline int _GetSocketInfo(NetSocket socket, OUT SocketInfo *output);
 
 static inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 																				 NetConnectionProtocol conn_protocol,
 																				 AddressList *output);
 
-static inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, int length);
-static inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr);
+static inline SocketAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, int length);
+static inline InAddress _InAddrFromSockInAddr(const SocketAddress *sock_in_addr);
 
 static inline int _ProcessGeneralCreateParams(NetCreateParams *params);
 static inline int _ProcessServerCreateParams(NetCreateParams *params);
@@ -403,7 +424,7 @@ const NetCreateParams *NetServerGetCreateParams(const NetServer *server) {
 errno_t NetClientSendToUDP(NetClient *client,
 													 const void *data, size_t *size,
 													 const NetUserAddress *address) {
-	SockInAddress sock_addr = {0};
+	SocketAddress sock_addr = {0};
 
 	//! FIXME: error-out if the send address is identical to the client's address (INVALID IN UDP)
 
@@ -952,7 +973,7 @@ inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 		ARRAYSIZE(address.name)
 	);
 
-	SockInAddress sock_addr = {0};
+	SocketAddress sock_addr = {0};
 
 	int result_code = -1;
 
@@ -1049,6 +1070,32 @@ int _MarkSocketNonBlocking(NetSocket socket) {
 	}
 
 	return EOK;
+}
+
+inline int _SocketSetBlocking(NetSocket socket, bool value) {
+	int result_code = -1;
+
+#ifdef WSA_NETWORK
+	result_code = ioctlsocket(socket, FIONBIO, (u_long *)&value);
+
+	if (result_code != EOK)
+	{
+		return ERR_LOG_V(
+			result_code,
+
+			"setting the socket blocking mode to %s failed, socket=%llu",
+			BOOL_ALPHA(value), socket
+		);
+	}
+
+#endif
+
+	return result_code;
+}
+
+inline int _SocketSetBroadcast(NetSocket socket, bool value) {
+	setsockopt(socket, SOL_SOCKET, SOL_SOCKET, (const char *)&value, sizeof(value));
+	return 0;
 }
 
 int _InitSocket(NetSocket *pSocket, const NetCreateParams *params) {
@@ -1211,7 +1258,7 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *a
 
 	memclear(address->name, ARRAYSIZE(address->name));
 
-	SockInAddress sock_in_addr = {0};
+	SocketAddress sock_in_addr = {0};
 	sock_in_addr.length = sizeof(sock_in_addr);
 
 	const int result = recvfrom(
@@ -1370,8 +1417,8 @@ inline int _Warning(int code, const char *format, ...) {
 	return code;
 }
 
-void _PutColor(FILE *fp, ConsoleColor color) {
-	fprintf(fp, "\033[%dm", color);
+void _PutColor(FILE *out_fp, ConsoleColor color) {
+	fprintf(out_fp, "\033[%dm", color);
 }
 
 inline NetInternalData *_CreateInternalData() {
@@ -1554,7 +1601,7 @@ inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *outp
 	return EOK;
 }
 
-inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port, SockInAddress *output) {
+inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port, SocketAddress *output) {
 	const short native_addr_type = _AddressTypeToNative(address->type);
 	InAddress in_addr = {0};
 
@@ -1584,6 +1631,10 @@ inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort por
 	return EOK;
 }
 
+inline int _GetSocketInfo(NetSocket socket, OUT SocketInfo *output) {
+	return 0;
+}
+
 inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 																	NetConnectionProtocol conn_protocol, AddressList *output) {
 	static const char *nodename = NULL;
@@ -1601,7 +1652,8 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 
 	_ultoa_s(port, port_str, ARRAYSIZE(port_str), 10);
 
-	const int error_code = getaddrinfo(nodename, port_str, &hints, &info_list);
+	// const int error_code = getaddrinfo(nodename, port_str, &hints, &info_list);
+	const int error_code = getaddrinfo("broadcast", NULL, &hints, &info_list);
 
 	if (error_code != EOK)
 	{
@@ -1619,7 +1671,7 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 	for (ADDRINFO *current_info = info_list;
 			 current_info != NULL; current_info = current_info->ai_next)
 	{
-		const SockInAddress sock_address =
+		const SocketAddress sock_address =
 			_SockInAddrFromDynamicSockAddr(current_info->ai_addr, (int)current_info->ai_addrlen);
 
 		const InAddress in_address = _InAddrFromSockInAddr(&sock_address);
@@ -1636,8 +1688,8 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 	return EOK;
 }
 
-inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, const int length) {
-	SockInAddress result = {0};
+inline SocketAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, const int length) {
+	SocketAddress result = {0};
 
 	result.length = length;
 
@@ -1659,7 +1711,7 @@ inline SockInAddress _SockInAddrFromDynamicSockAddr(const SOCKADDR *addr, const 
 	return result;
 }
 
-inline InAddress _InAddrFromSockInAddr(const SockInAddress *sock_in_addr) {
+inline InAddress _InAddrFromSockInAddr(const SocketAddress *sock_in_addr) {
 	InAddress result;
 
 	//* IPv6
@@ -1755,6 +1807,11 @@ inline int _ProcessServerCreateParams(NetCreateParams *params) {
 	if (result_code != EOK)
 	{
 		return result_code;
+	}
+
+	if (params->broadcast)
+	{
+
 	}
 
 	return EOK;
@@ -1853,7 +1910,7 @@ inline errno_t _GetLastNetError() {
 // if the error_code has no name (i.e not a valid/known error code), 
 // then the hex representation of the error code will be returned
 // ----
-// returns value should not be freed!
+// return value should not be freed!
 inline const char *_GetErrorName(const errno_t error_code) {
 	enum { template_str_size = 16, hex_radix = 16 };
 

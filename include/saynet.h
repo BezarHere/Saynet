@@ -47,6 +47,8 @@ typedef SAYNET_ENUM NetConnectionProtocol
 	eNConnectProto_UDP,
 } NetConnectionProtocol;
 
+typedef NetConnectionProtocol NetSocketType;
+
 typedef SAYNET_ENUM NetAddressType
 {
 	eNAddrType_IPv4,
