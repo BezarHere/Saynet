@@ -70,6 +70,9 @@ enum
 
 enum
 {
+	Base10Radix = 10,
+	HexRadix = 16,
+
 	DefaultRecvBufferSz = 0x10000,
 	MaxInactivityHits = 2500,
 
@@ -90,6 +93,12 @@ typedef enum ConsoleColor
 	eFGClr_Yellow = 33,
 	eFGClr_Blue = 34,
 } ConsoleColor;
+
+typedef enum SocketTimeoutProperty
+{
+	SockTIMEO_P_Receive,
+	SockTIMEO_P_Send,
+} SocketTimeoutProperty;
 
 typedef struct InAddress
 {
@@ -159,6 +168,8 @@ static struct NetService
 	ServiceKey keys[MaxNetServiceKeys];
 } g_service = {};
 
+typedef uint32_t Milliseconds;
+
 typedef int (*CallUseAddressProc)(SOCKET, const SOCKADDR *, int);
 
 static inline int _LoadNetService(OUT ServiceKey *key);
@@ -177,10 +188,20 @@ static inline int S_ServiceFindEmptyKey();
 static inline errno_t _PollServerUDP(NetServer *server);
 static inline errno_t _PollServerTCP(NetServer *server);
 
+#pragma region(conversion stuff)
 static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
+static inline NetConnectionProtocol _NativeSTToConnectionProtocol(int socktype);
+
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
+
 static inline short _AddressTypeToNative(NetAddressType type);
 static inline NetAddressType _NativeToAddressType(short type);
+
+static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
+static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output);
+static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
+																								 SocketAddress *output);
+#pragma endregion
 
 static inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 																	CallUseAddressProc proc, const char *context);
@@ -191,6 +212,8 @@ static inline int _SocketToListen(NetSocket socket, const NetCreateParams *param
 static inline int _MarkSocketNonBlocking(NetSocket socket);
 static inline int _SocketSetBlocking(NetSocket socket, bool value);
 static inline int _SocketSetBroadcast(NetSocket socket, bool value);
+
+static inline int _SetSocketTimeout(NetSocket socket, SocketTimeoutProperty property, Milliseconds timeout);
 
 static inline int _InitSocket(NetSocket *pSocket, const NetCreateParams *params);
 
@@ -227,14 +250,9 @@ static inline void _AbortClient(NetClient *client, const char *reason);
 static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
 
-static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
-static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output);
-static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetPort port,
-																								 SocketAddress *output);
-
 static inline int _GetSocketInfo(NetSocket socket, OUT SocketInfo *output);
 
-static inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
+static inline int _HostNameToAddressList(NetPort port,
 																				 NetConnectionProtocol conn_protocol,
 																				 AddressList *output);
 
@@ -273,6 +291,7 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	client->socket = INVALID_SOCKET;
 	NetCreateParams processed_params = *params;
 
+
 	// replaced 'params' by 'processed_params'
 	{
 		result_code = _ProcessClientCreateParams(&processed_params);
@@ -287,8 +306,8 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	result_code = _LoadNetService(&client->_internal->service_key);
 	ASSERT_CLIENT_CREATION(result_code);
 
+	_HostNameToAddressList(params->address.port, params->protocol, NULL);
 
-	_HostNameToAddressList(params->address.port, params->address.type, params->protocol, NULL);
 
 	result_code = _CreateSocket(&client->socket, params);
 	ASSERT_CLIENT_CREATION(result_code);
@@ -502,7 +521,7 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 }
 
 errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *size) {
-	const size_t original_size = *size;
+	const int original_size = (int)min(*size, INT32_MAX);
 	int result = 0;
 
 	result = send(client->socket, data, original_size, 0);
@@ -522,13 +541,15 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *
 
 		if (_IsSocketDisconnectionError(error))
 		{
-			_AbortServer(server, "server disconnected");
+			NetServerKickCLient(server, client, "client error");
+			return error;
+			// _AbortServer(server, "server disconnected");
 		}
 
 		return ERR_LOG_V(
 			error,
 
-			"server failed to sendto \"%s\":%d buffer %p, length %llu bytes through socket %llu -> %llu",
+			"server failed to send to \"%s\":%d buffer %p, length %llu bytes through socket %llu -> %llu",
 			client->address.name,
 			NetServerGetCreateParams(server)->address.port,
 			data,
@@ -917,7 +938,20 @@ int _ConnectionProtocolToNativeST(NetConnectionProtocol proto) {
 		return SOCK_DGRAM;
 
 	default:
-		return SOCK_DGRAM;
+		return SOCK_STREAM;
+	}
+}
+
+inline NetConnectionProtocol _NativeSTToConnectionProtocol(int socktype) {
+	switch (socktype)
+	{
+	case SOCK_STREAM:
+		return eNConnectProto_TCP;
+	case SOCK_DGRAM:
+		return eNConnectProto_UDP;
+
+	default:
+		return eNConnectProto_TCP;
 	}
 }
 
@@ -1038,7 +1072,7 @@ int _BindSocket(const NetSocket socket, const NetCreateParams *params) {
 }
 
 int _SocketToListen(NetSocket socket, const NetCreateParams *params) {
-	int result_code = listen(socket, params->max_listen_backlog);
+	int result_code = listen(socket, (int)min(params->max_listen_backlog, INT32_MAX));
 
 	if (result_code != EOK)
 	{
@@ -1094,8 +1128,12 @@ inline int _SocketSetBlocking(NetSocket socket, bool value) {
 }
 
 inline int _SocketSetBroadcast(NetSocket socket, bool value) {
-	setsockopt(socket, SOL_SOCKET, SOL_SOCKET, (const char *)&value, sizeof(value));
-	return 0;
+	return setsockopt(socket, SOL_SOCKET, SO_BROADCAST, (const char *)&value, sizeof(value));
+}
+
+inline int _SetSocketTimeout(NetSocket socket, SocketTimeoutProperty property, Milliseconds timeout) {
+	const int opt = (property == SockTIMEO_P_Receive) ? SO_RCVTIMEO : SO_SNDTIMEO;
+	return setsockopt(socket, SOL_SOCKET, opt, (const char *)&timeout, sizeof(timeout));
 }
 
 int _InitSocket(NetSocket *pSocket, const NetCreateParams *params) {
@@ -1635,14 +1673,14 @@ inline int _GetSocketInfo(NetSocket socket, OUT SocketInfo *output) {
 	return 0;
 }
 
-inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
-																	NetConnectionProtocol conn_protocol, AddressList *output) {
+inline int _HostNameToAddressList(NetPort port, NetConnectionProtocol conn_protocol,
+																	AddressList *output) {
 	static const char *nodename = NULL;
 
 	ADDRINFO hints = {0};
 
 	hints.ai_flags = 0;
-	hints.ai_family = _AddressTypeToNative(address_type);
+	hints.ai_family = AF_UNSPEC;
 	hints.ai_protocol = _ConnectionProtocolToNativeIP(conn_protocol);
 	hints.ai_socktype = _ConnectionProtocolToNativeST(conn_protocol);
 
@@ -1650,10 +1688,10 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 
 	char port_str[16] = {0};
 
-	_ultoa_s(port, port_str, ARRAYSIZE(port_str), 10);
+	_ultoa_s(port, port_str, ARRAYSIZE(port_str), Base10Radix);
 
-	// const int error_code = getaddrinfo(nodename, port_str, &hints, &info_list);
-	const int error_code = getaddrinfo("broadcast", NULL, &hints, &info_list);
+	const int error_code = getaddrinfo(nodename, port_str, &hints, &info_list);
+	// const int error_code = getaddrinfo("broadcast", NULL, &hints, &info_list);
 
 	if (error_code != EOK)
 	{
@@ -1661,12 +1699,11 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 		return ERR_LOG_V(
 			error_code,
 
-			"getaddrinfo(\"%d\", NULL, %p, %p) failed",
+			"getaddrinfo(%s, \"%s\", %p, %p) failed",
 
-			port, &hints, &info_list
+			nodename, port_str, &hints, &info_list
 		);
 	}
-
 
 	for (ADDRINFO *current_info = info_list;
 			 current_info != NULL; current_info = current_info->ai_next)
@@ -1679,8 +1716,29 @@ inline int _HostNameToAddressList(NetPort port, NetAddressType address_type,
 		NetAddress net_address = {0};
 		(void)_ConvertInAddrToNetAddress(&in_address, &net_address);
 
-		printf("getaddrinfo address at %p: \"%s\"\n", current_info, net_address.name);
+		if (output != NULL)
+		{
+			if (output->count >= ARRAYSIZE(output->data))
+			{
+				break;
+			}
 
+			output->data[output->count].sock_inaddr = sock_address;
+			output->data[output->count].inaddr = in_address;
+			output->data[output->count].net_address = net_address;
+
+			output->count++;
+		}
+		// no output? then just do a printout
+		else
+		{
+			printf(
+				"_HostNameToAddressList: getaddrinfo address at %p: \"%s\" port %d\n",
+				current_info,
+				net_address.name,
+				sock_address.data.addr.sin_port
+			);
+		}
 	}
 
 	freeaddrinfo(info_list);
@@ -1905,6 +1963,7 @@ inline bool _IsSocketDisconnectionError(int error_code) {
 inline errno_t _GetLastNetError() {
 	return WSAGetLastError();
 }
+
 
 // returns the error name
 // if the error_code has no name (i.e not a valid/known error code), 
