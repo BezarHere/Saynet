@@ -99,6 +99,7 @@ typedef struct NetClientID
 {
 	NetSocket socket;
 	NetAddress address;
+	void *userdata;
 } NetClientID;
 
 typedef struct NetClientIDListNode
@@ -113,6 +114,10 @@ typedef struct NetClientIDListNode
 typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
 
 typedef void (*NetClientLeftProc)(const struct NetClientID *client_id);
+
+/// @brief called when an operation of some client failed
+/// @returns non-zero if we should kick the client
+typedef int (*NetClientFailureProc)(const struct NetClientID *client_id, errno_t error);
 
 /// @brief TCP receive callback for servers
 /// @return if the return value is not zero, then the client will know that the packet is bad (or such)
