@@ -210,6 +210,7 @@ static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetP
 																								 SocketAddress *output);
 #pragma endregion
 
+static inline void _DestroyNetBase(NetObject *net_obj);
 static inline errno_t _CheckNetBase(const NetObject *net_obj);
 
 static inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
@@ -375,23 +376,13 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 }
 
 errno_t NetCloseClient(NetClient *client) {
-	// TODO: check return value
-	_UnloadNetService(client->_base._internal->service_key);
-
-	_DestroyInternalData(client->_base._internal);
-	client->_base._internal = NULL;
-
-	_CloseSocket(client->_base.socket);
-	client->_base.socket = INVALID_SOCKET;
+	_DestroyNetBase(&client->_base);
 
 	return EOK;
 }
 
 errno_t NetCloseServer(NetServer *server) {
-	// TODO: check return value
-	_UnloadNetService(server->_base._internal->service_key);
-
-	_DestroyInternalData(server->_base._internal);
+	_DestroyNetBase(&server->_base);
 
 	{
 		NetClientIDListNode *node = server->p_client_ids;
@@ -1112,6 +1103,20 @@ inline NetAddressType _NativeToAddressType(short type) {
 		// TODO: report an error?
 		return eNAddrType_IPv4;
 	}
+}
+
+inline void _DestroyNetBase(NetObject *net_obj) {
+	errno_t err_codes = 0;
+	// TODO: should we report stuff to stderr? or even return midway?
+
+	err_codes = _UnloadNetService(net_obj->_internal->service_key);
+
+	/* err_codes = */ _DestroyInternalData(net_obj->_internal);
+	net_obj->_internal = NULL;
+
+	/* *err_codes = */ _CloseSocket(net_obj->socket);
+	net_obj->socket = INVALID_SOCKET;
+
 }
 
 inline errno_t _CheckNetBase(const NetObject *net_obj) {
