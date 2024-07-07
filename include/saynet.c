@@ -49,15 +49,15 @@
 #define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
 {return code; _AbortServer(server, "creation failure");} 
 
-#define VERBOSE(...) printf(__VA_ARGS__)
+#define VERBOSE_V(format, ...) printf("%s:%d: " format, __FUNCTION__, __LINE__, __VA_ARGS__);
 
 #define ERROR_ENTRY(name) case name: return (#name) + 1
 
 // skip the 'WSA' part
 #define ERROR_ENTRY_WSA(name) case name: return (#name)
 
-#define ERR_LOG(code, msg) _Error(code, "%s:%d::" msg, __FUNCTION__, __LINE__)
-#define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d::" msg, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define ERR_LOG(code, msg) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
+#define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #pragma region(defines)
 
@@ -185,8 +185,15 @@ static inline int S_ServiceFindKey(ServiceKey key);
 // -1 if non are found
 static inline int S_ServiceFindEmptyKey();
 
+static inline errno_t _PollShared_UDP(NetSocket socket,
+																			NetInternalHandle handle, NetUDPRecvProc recv_proc,
+																			const char *context);
+
 static inline errno_t _PollServerUDP(NetServer *server);
 static inline errno_t _PollServerTCP(NetServer *server);
+
+static inline errno_t _PollClientUDP(NetClient *client);
+static inline errno_t _PollClientTCP(NetClient *client);
 
 #pragma region(conversion stuff)
 static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
@@ -404,7 +411,17 @@ errno_t NetCloseServer(NetServer *server) {
 }
 
 errno_t NetPollClient(NetClient *client) {
-	return EFAULT;
+	if (client->socket == INVALID_SOCKET || !NetIsClientValid(client))
+	{
+		return EINVAL;
+	}
+
+	if (client->_internal->connection_params.protocol != eNConnectProto_TCP)
+	{
+		return _PollClientUDP(client);
+	}
+
+	return _PollClientTCP(client);
 }
 
 errno_t NetPollServer(NetServer *server) {
@@ -589,7 +606,7 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 
 	_FreeClientIDNode(node);
 
-	VERBOSE(
+	VERBOSE_V(
 		"removed client id {socket=%llu, address=\"%.*s\"}, reason=%s",
 		client_id->socket,
 		(int)ARRAYSIZE(client_id->address.name),
@@ -766,38 +783,40 @@ inline int S_ServiceFindEmptyKey() {
 	return -1;
 }
 
-inline errno_t _PollServerUDP(NetServer *server) {
+inline errno_t _PollShared_UDP(NetSocket socket, NetInternalHandle handle,
+															 NetUDPRecvProc recv_proc, const char *context) {
+	enum { max_loop_iteration = 256 };
 	NetAddress address = {0};
-	address.type = NetServerGetCreateParams(server)->address.type;
+	// address.type = NetServerGetCreateParams(<NetObj>)->address.type;
 
-	while (true)
+	int _iterations = 0;
+	while (_iterations++ < max_loop_iteration)
 	{
-		int size = (int)server->_internal->recv_buffer_sz;
+		int size = (int)handle->recv_buffer_sz;
 
-		int result_code = _RecvAnyUDP(
-			server->socket,
+		const errno_t result_code = _RecvAnyUDP(
+			socket,
 
-			server->_internal->recv_buffer,
+			handle->recv_buffer,
 			&size,
 
 			&address
 		);
 
-		// server's socket has shutdown/closed prior to recv
+		// client's socket has shutdown/closed prior to recv
 		if (size == 0)
 		{
 			break;
 		}
 
-		VERBOSE("received %d bytes on udp\n", size);
+		VERBOSE_V("%s: received %d bytes on udp\n", context, size);
 
 		if (result_code != EOK)
 		{
 			// unrecoverable error, stop receiving
 			if (size == -2)
 			{
-				_AbortServer(server, "hard error");
-				break;
+				return _Error(result_code, "%s: fatal error reported from _RecvAnyUDP", context);
 			}
 
 			// _RecvAnyUDP should have reported something, skip to next iteration
@@ -806,23 +825,41 @@ inline errno_t _PollServerUDP(NetServer *server) {
 
 		// process data
 
-		if (server->proc_udp_recv)
+		if (recv_proc)
 		{
 			NetPacketData data = {0};
 
-			data.data = server->_internal->recv_buffer;
+			data.data = handle->recv_buffer;
 			data.size = size;
 
-			const int callback_recv_result = server->proc_udp_recv(&address, data);
+			const int callback_recv_result = recv_proc(&address, data);
 
 			// nothing todo with this rn
 			(void)callback_recv_result;
 		}
-
-
 	}
 
 	return EOK;
+}
+
+/*
+TODO:
+	make these poll functions more uniform
+	adding a lot of shared functions to reduce clutter and copied code
+	more shared functions will also reduce bugs, making them a one-fix to all situation
+*/
+
+inline errno_t _PollServerUDP(NetServer *server) {
+	const errno_t result_code = _PollShared_UDP(
+		server->socket, server->_internal, server->proc_udp_recv, "server"
+	);
+
+	if (_IsSocketDisconnectionError(result_code))
+	{
+		_AbortServer(server, _GetErrorName(result_code));
+	}
+
+	return result_code;
 }
 
 inline errno_t _PollServerTCP(NetServer *server) {
@@ -847,7 +884,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 			if (result)
 			{
 				_CloseClientID(&client_id);
-				VERBOSE(
+				VERBOSE_V(
 					"kicked client {socket=%llu, address=%.*s}, server code=%d",
 					client_id.socket,
 
@@ -866,7 +903,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 			_CreateClientIDNode(&client_id)
 		);
 
-		VERBOSE(
+		VERBOSE_V(
 			"connected: %llu, %.*s\n",
 			client_id.socket,
 
@@ -924,6 +961,66 @@ inline errno_t _PollServerTCP(NetServer *server) {
 				packet
 			);
 		}
+	}
+
+	return EOK;
+}
+
+inline errno_t _PollClientUDP(NetClient *client) {
+	const errno_t result_code = _PollShared_UDP(
+		client->socket, client->_internal, client->proc_udp_recv, "client"
+	);
+
+	if (_IsSocketDisconnectionError(result_code))
+	{
+		_AbortClient(client, _GetErrorName(result_code));
+	}
+
+	return result_code;
+}
+
+inline errno_t _PollClientTCP(NetClient *client) {
+	enum { max_recv_iteration = 128 };
+
+	int _iteration = 0;
+	while (_iteration++ < max_recv_iteration)
+	{
+		int size = client->_internal->recv_buffer_sz;
+		const errno_t error = _RecvFromSocket(client->socket, client->_internal->recv_buffer, &size);
+		
+		// darling today, aren't we?
+		(void)error;
+
+		// no/invalid connection
+		if (size == -2)
+		{
+			NetCloseClient(client);
+			break;
+		}
+
+		if (size < 0)
+		{
+			// maybe an error? did it get reported by _RecvFromSocket?
+			break;
+		}
+
+		// there is data, notify user 
+		if (size > 0)
+		{
+			NetPacketData packet = {};
+
+			packet.data = client->_internal->recv_buffer;
+			packet.size = size;
+
+			client->proc_server_recv(
+				packet
+			);
+
+			continue;
+		}
+
+
+		break;
 	}
 
 	return EOK;
@@ -1200,7 +1297,7 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 	// to make sure, set the last char to a null termination
 	client_id->address.name[ARRAYSIZE(client_id->address.name) - 1] = 0;
 
-	VERBOSE("accepted address %s\n", client_id->address.name);
+	VERBOSE_V("accepted address %s\n", client_id->address.name);
 
 	return EOK;
 }
@@ -1297,7 +1394,7 @@ inline int _RecvAnyUDP(NetSocket socket, uint8_t *data, int *size, NetAddress *a
 	memclear(address->name, ARRAYSIZE(address->name));
 
 	SocketAddress sock_in_addr = {0};
-	sock_in_addr.length = sizeof(sock_in_addr);
+	sock_in_addr.length = sizeof(sock_in_addr.data);
 
 	const int result = recvfrom(
 		socket,

@@ -18,20 +18,25 @@ static int receive_data_udp(const NetAddress *address, NetPacketData data) {
 }
 
 static void *net_obj = nullptr;
-static const char *response =
-"HTTP/1.0 200 OK\nContent-type: text/html\n\nHELLO FROM SAYNET!!";
+static char *response =
+"HTTP/1.0 200 OK\nContent-type: text/html\n\n";
 static int client_joined_counter = 0;
 
 static void send_response(const NetClientID *ptr = nullptr);
+static void _setup_response();
 
 int main() {
+	_setup_response();
+
 	std::cout << "choose either 's' for server or 'c' for client: ";
 	char c = 0;
 	std::cin >> c;
 
+	c = tolower(c);
+
 	NetCreateParams params = {};
 	params.address.type = NetAddressType::eNAddrType_IPv4;
-	params.address.port = 8080;
+	params.address.port = 80;
 	params.protocol = NetConnectionProtocol::eNConnectProto_TCP;
 
 	if (c == 's')
@@ -179,4 +184,30 @@ void send_response(const NetClientID *ptr) {
 	size_t length = strlen(response);
 	// NetServerSend(&server, &server.p_client_ids->client_id, response, &length);
 	NetServerSend((NetServer *)net_obj, ptr, response, &length);
+}
+
+void _setup_response() {
+	const size_t size = 0xffff;
+	char *const response_buf = new char[size + 1] {};
+	char *current = response_buf;
+
+	strcpy(current, response);
+	current += strlen(current);
+
+	FILE *fp = fopen("page.html", "r");
+
+	if (fp == nullptr)
+	{
+		std::cout << "failed to load page\n";
+		response = current;
+		return;
+	}
+
+	size_t counter = fread(current, sizeof(char), size - (current - response_buf), fp);
+	current[counter] = 0;
+
+	response = response_buf;
+	std::cout << "loaded page, bytes=" << counter << '\n';
+
+	fclose(fp);
 }

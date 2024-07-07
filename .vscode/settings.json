@@ -10,6 +10,7 @@
 		"STRUNCATE",
 		"ultoa",
 		"WSADATA",
+		"WSAER",
 		"WSAESHUTDOWN"
 	]
 }
