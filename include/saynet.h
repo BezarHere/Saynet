@@ -152,6 +152,8 @@ typedef struct NetInternalData *NetInternalHandle;
 
 typedef struct _NetObject
 {
+	void *userdata;
+
 	// readonly
 	NetSocket socket;
 	// readonly
