@@ -14,7 +14,13 @@
 #define SAYNET_ENUM enum
 #endif
 
+#ifndef SAYNET_API
 #define SAYNET_API
+#endif
+
+#ifndef EOK
+#define EOK 0
+#endif
 
 // constants
 enum
@@ -54,6 +60,13 @@ typedef SAYNET_ENUM NetAddressType
 	eNAddrType_IPv4,
 	eNAddrType_IPv6,
 } NetAddressType;
+
+typedef SAYNET_ENUM NetSocketFlags
+{
+	eNSockFlag_None = 0x00,
+	eNSockFlag_Writeable = 0x01,
+	eNSockFlag_Readable = 0x02,
+} NetSocketFlags;
 
 typedef char NetAddressBuffer[NetAddressBufferSize];
 
@@ -134,22 +147,28 @@ typedef int (*NetServerRecvProc)(NetPacketData packet_data);
 // packet data is owned/freed by saynet, copy the packet to a new buffer to keep after callback
 typedef int (*NetUDPRecvProc)(const NetAddress *address, NetPacketData packet_data);
 
+// internal and readonly properties of net objects
 typedef struct NetInternalData *NetInternalHandle;
+
+typedef struct _NetObject
+{
+	// readonly
+	NetSocket socket;
+	// readonly
+	NetInternalHandle _internal;
+} _NetObject;
 
 typedef struct NetClient
 {
-	NetSocket socket;
-
 	NetServerRecvProc proc_server_recv;
 	NetUDPRecvProc proc_udp_recv;
 
-	NetInternalHandle _internal;
+	// base (readonly)
+	_NetObject _base;
 } NetClient;
 
 typedef struct NetServer
 {
-	NetSocket socket;
-
 	// client joined callback (TCP)
 	NetClientJoinedProc proc_client_joined;
 
@@ -164,7 +183,8 @@ typedef struct NetServer
 
 	NetClientIDListNode *p_client_ids;
 
-	NetInternalHandle _internal;
+	// base (readonly)
+	_NetObject _base;
 } NetServer;
 
 
@@ -208,14 +228,10 @@ extern "C" {
 	// 'reason' is not owned by the function
 	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);
 
-
-	static inline bool NetIsClientValid(const NetClient *client) {
-		return client != NULL && client->_internal != NULL;
-	}
-
-	static inline bool NetIsServerValid(const NetServer *server) {
-		return server != NULL && server->_internal != NULL;
-	}
+	/// @returns the error state of the client, 0 for valid clients
+	SAYNET_API errno_t NetGetClientError(const NetClient *client);
+	/// @returns the error state of the server, 0 for valid servers
+	SAYNET_API errno_t NetGetServerError(const NetServer *server);
 
 #ifdef __cplusplus
 }

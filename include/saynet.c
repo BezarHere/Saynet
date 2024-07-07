@@ -37,8 +37,6 @@
 #define OUT
 #define INOUT
 
-#define EOK 0
-
 #define BOOL_ALPHA(cond) ((cond) ? "true" : "false")
 
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
@@ -49,7 +47,7 @@
 #define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
 {return code; _AbortServer(server, "creation failure");} 
 
-#define VERBOSE_V(format, ...) printf("%s:%d: " format, __FUNCTION__, __LINE__, __VA_ARGS__);
+#define VERBOSE_V(format, ...) printf("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
 
 #define ERROR_ENTRY(name) case name: return (#name) + 1
 
@@ -99,6 +97,8 @@ typedef enum SocketTimeoutProperty
 	SockTIMEO_P_Receive,
 	SockTIMEO_P_Send,
 } SocketTimeoutProperty;
+
+typedef _NetObject NetObject;
 
 typedef struct InAddress
 {
@@ -210,6 +210,8 @@ static inline int _ConvertNetAddressToSockInAddr(const NetAddress *address, NetP
 																								 SocketAddress *output);
 #pragma endregion
 
+static inline errno_t _CheckNetBase(const NetObject *net_obj);
+
 static inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
 																	CallUseAddressProc proc, const char *context);
 
@@ -295,7 +297,7 @@ static inline void *memclear(void *mem, size_t size) {
 errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	int result_code = 0;
 
-	client->socket = INVALID_SOCKET;
+	client->_base.socket = INVALID_SOCKET;
 	NetCreateParams processed_params = *params;
 
 
@@ -306,27 +308,27 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 		params = &processed_params;
 	}
 
-	_DestroyInternalData(client->_internal);
-	client->_internal = _CreateInternalData();
-	client->_internal->connection_params = *params;
+	_DestroyInternalData(client->_base._internal);
+	client->_base._internal = _CreateInternalData();
+	client->_base._internal->connection_params = *params;
 
-	result_code = _LoadNetService(&client->_internal->service_key);
+	result_code = _LoadNetService(&client->_base._internal->service_key);
 	ASSERT_CLIENT_CREATION(result_code);
 
 	_HostNameToAddressList(params->address.port, params->protocol, NULL);
 
 
-	result_code = _CreateSocket(&client->socket, params);
+	result_code = _CreateSocket(&client->_base.socket, params);
 	ASSERT_CLIENT_CREATION(result_code);
 
 	if (params->protocol == eNConnectProto_TCP)
 	{
-		result_code = _ConnectSocket(client->socket, params);
+		result_code = _ConnectSocket(client->_base.socket, params);
 		ASSERT_CLIENT_CREATION(result_code);
 	}
 	else
 	{
-		result_code = _BindSocket(client->socket, params);
+		result_code = _BindSocket(client->_base.socket, params);
 		ASSERT_CLIENT_CREATION(result_code);
 	}
 
@@ -336,7 +338,7 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 	int result_code = 0;
 
-	server->socket = INVALID_SOCKET;
+	server->_base.socket = INVALID_SOCKET;
 	NetCreateParams processed_params = *params;
 
 	// replaced 'params' by 'processed_params'
@@ -346,50 +348,50 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 		params = &processed_params;
 	}
 
-	_DestroyInternalData(server->_internal);
-	server->_internal = _CreateInternalData();
-	server->_internal->connection_params = *params;
+	_DestroyInternalData(server->_base._internal);
+	server->_base._internal = _CreateInternalData();
+	server->_base._internal->connection_params = *params;
 
-	result_code = _LoadNetService(&server->_internal->service_key);
+	result_code = _LoadNetService(&server->_base._internal->service_key);
 	ASSERT_SERVER_CREATION(result_code);
 
 
-	result_code = _InitSocket(&server->socket, params);
+	result_code = _InitSocket(&server->_base.socket, params);
 	ASSERT_SERVER_CREATION(result_code);
 
 	if (params->protocol == eNConnectProto_TCP)
 	{
-		result_code = _SocketToListen(server->socket, params);
+		result_code = _SocketToListen(server->_base.socket, params);
 		ASSERT_SERVER_CREATION(result_code);
 	}
 
 	NetAddressBuffer buffer = {0};
 
-	_GetSocketAddr(server->socket, &buffer);
+	_GetSocketAddr(server->_base.socket, &buffer);
 
-	printf("server %llu hosted at %s\n", server->socket, buffer);
+	printf("server %llu hosted at %s\n", server->_base.socket, buffer);
 
 	return result_code;
 }
 
 errno_t NetCloseClient(NetClient *client) {
 	// TODO: check return value
-	_UnloadNetService(client->_internal->service_key);
+	_UnloadNetService(client->_base._internal->service_key);
 
-	_DestroyInternalData(client->_internal);
-	client->_internal = NULL;
+	_DestroyInternalData(client->_base._internal);
+	client->_base._internal = NULL;
 
-	_CloseSocket(client->socket);
-	client->socket = INVALID_SOCKET;
+	_CloseSocket(client->_base.socket);
+	client->_base.socket = INVALID_SOCKET;
 
 	return EOK;
 }
 
 errno_t NetCloseServer(NetServer *server) {
 	// TODO: check return value
-	_UnloadNetService(server->_internal->service_key);
+	_UnloadNetService(server->_base._internal->service_key);
 
-	_DestroyInternalData(server->_internal);
+	_DestroyInternalData(server->_base._internal);
 
 	{
 		NetClientIDListNode *node = server->p_client_ids;
@@ -411,12 +413,13 @@ errno_t NetCloseServer(NetServer *server) {
 }
 
 errno_t NetPollClient(NetClient *client) {
-	if (client->socket == INVALID_SOCKET || !NetIsClientValid(client))
+	const errno_t state = NetGetClientError(client);
+	if (state != EOK)
 	{
-		return EINVAL;
+		return _Error(state, "Bad client! can not poll (check client with 'NetGetClientError')");
 	}
 
-	if (client->_internal->connection_params.protocol != eNConnectProto_TCP)
+	if (client->_base._internal->connection_params.protocol != eNConnectProto_TCP)
 	{
 		return _PollClientUDP(client);
 	}
@@ -425,23 +428,24 @@ errno_t NetPollClient(NetClient *client) {
 }
 
 errno_t NetPollServer(NetServer *server) {
-	if (server->socket == INVALID_SOCKET || !NetIsServerValid(server))
+	const errno_t state = NetGetServerError(server);
+	if (state != EOK)
 	{
-		return EINVAL;
+		return _Error(state, "Bad server! can not poll (check server with 'NetGetServerError')");
 	}
 
 	// not dealing with overflows in casts (int <-> size_t)
-	if (server->_internal->recv_buffer_sz >= INT32_MAX)
+	if (server->_base._internal->recv_buffer_sz >= INT32_MAX)
 	{
 		return ERR_LOG_V(
 			E2BIG,
 
 			"server receive buffer is too big, buffer size is %llu bytes, max size is %d bytes",
-			server->_internal->recv_buffer_sz, INT32_MAX
+			server->_base._internal->recv_buffer_sz, INT32_MAX
 		);
 	}
 
-	if (server->_internal->connection_params.protocol != eNConnectProto_TCP)
+	if (server->_base._internal->connection_params.protocol != eNConnectProto_TCP)
 	{
 		return _PollServerUDP(server);
 	}
@@ -450,11 +454,11 @@ errno_t NetPollServer(NetServer *server) {
 }
 
 const NetCreateParams *NetClientGetCreateParams(const NetClient *client) {
-	return &client->_internal->connection_params;
+	return &client->_base._internal->connection_params;
 }
 
 const NetCreateParams *NetServerGetCreateParams(const NetServer *server) {
-	return &server->_internal->connection_params;
+	return &server->_base._internal->connection_params;
 }
 
 errno_t NetClientSendToUDP(NetClient *client,
@@ -476,7 +480,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 	);
 
 	int result_code = sendto(
-		client->socket,
+		client->_base.socket,
 		(const char *)data,
 		// FIXME: this will overflow! check for overflow later
 		(int)*size,
@@ -501,7 +505,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 			error,
 
 			"client failed to send (UDP) buffer %p, length %llu bytes in socket %llu to \"%s\":%d",
-			data, original_size, client->socket, address->name, port
+			data, original_size, client->_base.socket, address->name, port
 		);
 	}
 
@@ -512,7 +516,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 
 errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 	// FIXME: this will overflow! check for overflow later
-	int result = send(client->socket, data, (int)*size, 0);
+	int result = send(client->_base.socket, data, (int)*size, 0);
 
 	if (result == SOCKET_ERROR)
 	{
@@ -530,23 +534,23 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 			error,
 
 			"client failed to send buffer %p, length %llu bytes in socket %llu",
-			data, original_size, client->socket
+			data, original_size, client->_base.socket
 		);
 	}
 
 	return EOK;
 }
 
-errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *size) {
+errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const void *data, size_t *size) {
 	const int original_size = (int)min(*size, INT32_MAX);
 	int result = 0;
 
-	result = send(client->socket, data, original_size, 0);
+	result = send(client_id->socket, data, original_size, 0);
 
 	printf(
 		"sending stuff to client %llu \"%s\":%d\n",
-		client->socket,
-		client->address.name,
+		client_id->socket,
+		client_id->address.name,
 		NetServerGetCreateParams(server)->address.port
 	);
 
@@ -558,7 +562,7 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *
 
 		if (_IsSocketDisconnectionError(error))
 		{
-			NetServerKickCLient(server, client, "client error");
+			NetServerKickCLient(server, client_id, "client error");
 			return error;
 			// _AbortServer(server, "server disconnected");
 		}
@@ -567,12 +571,12 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *
 			error,
 
 			"server failed to send to \"%s\":%d buffer %p, length %llu bytes through socket %llu -> %llu",
-			client->address.name,
+			client_id->address.name,
 			NetServerGetCreateParams(server)->address.port,
 			data,
 			original_size,
-			server->socket,
-			client->socket
+			server->_base.socket,
+			client_id->socket
 		);
 	}
 
@@ -615,6 +619,24 @@ errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, con
 	);
 
 	return EOK;
+}
+
+errno_t NetGetClientError(const NetClient *client) {
+	if (client == NULL)
+	{
+		return EINVAL;
+	}
+
+	return _CheckNetBase(&client->_base);
+}
+
+errno_t NetGetServerError(const NetServer *server) {
+	if (server == NULL)
+	{
+		return EINVAL;
+	}
+
+	return _CheckNetBase(&server->_base);
 }
 
 #pragma endregion
@@ -809,7 +831,7 @@ inline errno_t _PollShared_UDP(NetSocket socket, NetInternalHandle handle,
 			break;
 		}
 
-		VERBOSE_V("%s: received %d bytes on udp\n", context, size);
+		VERBOSE_V("%s: received %d bytes on udp", context, size);
 
 		if (result_code != EOK)
 		{
@@ -851,7 +873,7 @@ TODO:
 
 inline errno_t _PollServerUDP(NetServer *server) {
 	const errno_t result_code = _PollShared_UDP(
-		server->socket, server->_internal, server->proc_udp_recv, "server"
+		server->_base.socket, server->_base._internal, server->proc_udp_recv, "server"
 	);
 
 	if (_IsSocketDisconnectionError(result_code))
@@ -869,7 +891,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		bool found = false;
 		NetClientID client_id = {0};
 
-		int result = _SocketAcceptConn(server->socket, &client_id, &found);
+		int result = _SocketAcceptConn(server->_base.socket, &client_id, &found);
 
 		if (result != EOK || !found)
 		{
@@ -904,7 +926,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		);
 
 		VERBOSE_V(
-			"connected: %llu, %.*s\n",
+			"connected: %llu, %.*s",
 			client_id.socket,
 
 			(int)ARRAYSIZE(client_id.address.name),
@@ -919,10 +941,10 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		NetClientIDListNode *const node = current_node;
 		current_node = current_node->_next;
 
-		int size = (int)server->_internal->recv_buffer_sz;
+		int size = (int)server->_base._internal->recv_buffer_sz;
 
 		const int err_code = \
-			_RecvFromSocket(node->client_id.socket, server->_internal->recv_buffer, &size);
+			_RecvFromSocket(node->client_id.socket, server->_base._internal->recv_buffer, &size);
 
 		// error checking is done by the output parameter 'size'
 		(void)err_code;
@@ -953,7 +975,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 		{
 			NetPacketData packet = {};
 
-			packet.data = server->_internal->recv_buffer;
+			packet.data = server->_base._internal->recv_buffer;
 			packet.size = size;
 
 			server->proc_client_recv(
@@ -968,7 +990,7 @@ inline errno_t _PollServerTCP(NetServer *server) {
 
 inline errno_t _PollClientUDP(NetClient *client) {
 	const errno_t result_code = _PollShared_UDP(
-		client->socket, client->_internal, client->proc_udp_recv, "client"
+		client->_base.socket, client->_base._internal, client->proc_udp_recv, "client"
 	);
 
 	if (_IsSocketDisconnectionError(result_code))
@@ -985,9 +1007,9 @@ inline errno_t _PollClientTCP(NetClient *client) {
 	int _iteration = 0;
 	while (_iteration++ < max_recv_iteration)
 	{
-		int size = client->_internal->recv_buffer_sz;
-		const errno_t error = _RecvFromSocket(client->socket, client->_internal->recv_buffer, &size);
-		
+		int size = client->_base._internal->recv_buffer_sz;
+		const errno_t error = _RecvFromSocket(client->_base.socket, client->_base._internal->recv_buffer, &size);
+
 		// darling today, aren't we?
 		(void)error;
 
@@ -1009,7 +1031,7 @@ inline errno_t _PollClientTCP(NetClient *client) {
 		{
 			NetPacketData packet = {};
 
-			packet.data = client->_internal->recv_buffer;
+			packet.data = client->_base._internal->recv_buffer;
 			packet.size = size;
 
 			client->proc_server_recv(
@@ -1090,6 +1112,27 @@ inline NetAddressType _NativeToAddressType(short type) {
 		// TODO: report an error?
 		return eNAddrType_IPv4;
 	}
+}
+
+inline errno_t _CheckNetBase(const NetObject *net_obj) {
+	if (net_obj == NULL)
+	{
+		return _Error(EINVAL, "Can not check a null NetObject! (bug?)");
+	}
+
+	// no socket
+	if (net_obj->socket == INVALID_SOCKET)
+	{
+		return ENOLINK;
+	}
+
+	// no internals
+	if (net_obj->_internal == NULL)
+	{
+		return ENODATA;
+	}
+
+	return EOK;
 }
 
 inline int _CallUseAddress(NetSocket socket, const NetCreateParams *params,
@@ -1297,7 +1340,7 @@ inline int _SocketAcceptConn(NetSocket socket, NetClientID *client_id, bool *fou
 	// to make sure, set the last char to a null termination
 	client_id->address.name[ARRAYSIZE(client_id->address.name) - 1] = 0;
 
-	VERBOSE_V("accepted address %s\n", client_id->address.name);
+	VERBOSE_V("accepted address %s", client_id->address.name);
 
 	return EOK;
 }
