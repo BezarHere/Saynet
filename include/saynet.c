@@ -47,7 +47,7 @@
 #define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
 {return code; _AbortServer(server, "creation failure");} 
 
-#define VERBOSE_V(format, ...) printf("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
+#define VERBOSE_V(format, ...) if (g_verbose) printf("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
 
 #define ERROR_ENTRY(name) case name: return (#name) + 1
 
@@ -174,6 +174,7 @@ static struct NetService
 	// TODO: replace this with an array of NetServiceNodes
 	ServiceKey keys[MaxNetServiceKeys];
 } g_service = {};
+static bool g_verbose = true;
 
 typedef uint32_t Milliseconds;
 
@@ -302,6 +303,10 @@ static inline void *memclear(void *mem, size_t size) {
 
 #pragma region(lib funcs)
 
+void NetSetVerbose(bool verbose) {
+	g_verbose = verbose;
+}
+
 errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 	ARG_NULL_CHECK(client);
 	ARG_NULL_CHECK(params);
@@ -383,7 +388,7 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 
 	_GetSocketAddr(server->_base.socket, &buffer);
 
-	printf("server %llu hosted at %s\n", server->_base.socket, buffer);
+	VERBOSE_V("server %llu hosted at %s\n", server->_base.socket, buffer);
 
 	return result_code;
 }
@@ -574,7 +579,7 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const voi
 
 	result = send(client_id->socket, data, original_size, 0);
 
-	printf(
+	VERBOSE_V(
 		"sending stuff to client %llu \"%s\":%d\n",
 		client_id->socket,
 		client_id->address.name,
@@ -1913,7 +1918,7 @@ inline int _HostNameToAddressList(NetPort port, NetConnectionProtocol conn_proto
 		// no output? then just do a printout
 		else
 		{
-			printf(
+			VERBOSE_V(
 				"_HostNameToAddressList: getaddrinfo address at %p: \"%s\" port %d\n",
 				current_info,
 				net_address.name,

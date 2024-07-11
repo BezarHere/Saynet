@@ -193,6 +193,7 @@ typedef struct NetServer
 #ifdef __cplusplus
 extern "C" {
 #endif
+	SAYNET_API void NetSetVerbose(bool verbose);
 
 	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetCreateParams *params);
 	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetCreateParams *params);
@@ -217,7 +218,7 @@ extern "C" {
 	/// @param data the data
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
 	/// @return error if failed, zero at success
-	SAYNET_API errno_t NetClientSend(NetClient *client, const void *data, size_t *size);
+	SAYNET_API errno_t NetClientSend(NetClient *client, const void *data, size_t *psize);
 
 	/// @brief send data to the client, only works in TCP (for UPD, see NetClientSendToUDP)
 	/// @param server the server that will send the data
@@ -225,7 +226,7 @@ extern "C" {
 	/// @param data the data
 	/// @param count [in/out] in the data length, out the amount of bytes sent (can be less then the data length)
 	/// @return error if failed, zero at success
-	SAYNET_API errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *size);
+	SAYNET_API errno_t NetServerSend(NetServer *server, const NetClientID *client, const void *data, size_t *psize);
 
 	// 'reason' is not owned by the function
 	SAYNET_API errno_t NetServerKickCLient(NetServer *server, const NetClientID *client_id, const char *reason);
