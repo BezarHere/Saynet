@@ -47,7 +47,7 @@
 #define ASSERT_SERVER_CREATION(code) if ((code) != EOK) \
 {return code; _AbortServer(server, "creation failure");} 
 
-#define VERBOSE_V(format, ...) if (g_verbose) printf("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
+#define VERBOSE_V(format, ...) _Imp_Verbose("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
 
 #define ERROR_ENTRY(name) case name: return (#name) + 1
 
@@ -174,6 +174,8 @@ static struct NetService
 	// TODO: replace this with an array of NetServiceNodes
 	ServiceKey keys[MaxNetServiceKeys];
 } g_service = {};
+
+static FILE *g_verbose_out;
 static bool g_verbose = true;
 
 typedef uint32_t Milliseconds;
@@ -253,6 +255,7 @@ static inline int _SetMaxMessageSize(NetSocket socket, int new_size);
 static inline int _Error(int code, const char *format, ...);
 // will not display the code if it's EOK
 static inline int _Warning(int code, const char *format, ...);
+static inline void _Imp_Verbose(const char *format, ...);
 
 static inline void _PutColor(FILE *out_fp, ConsoleColor color);
 
@@ -1639,6 +1642,23 @@ inline int _Warning(int code, const char *format, ...) {
 	fputc('\n', stdout);
 
 	return code;
+}
+
+inline void _Imp_Verbose(const char *format, ...) {
+	if (!g_verbose)
+	{
+		return;
+	}
+
+	if (g_verbose_out == NULL)
+	{
+		g_verbose_out = stdout;
+	}
+
+	va_list va_list;
+	va_start(va_list, format);
+	vfprintf(g_verbose_out, format, va_list);
+	va_end(va_list);
 }
 
 void _PutColor(FILE *out_fp, ConsoleColor color) {
