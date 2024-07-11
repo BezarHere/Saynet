@@ -27,7 +27,6 @@
 #include <netinet/in.h>
 #endif
 
-
 // #pragma comment(lib, "Ws2_32.lib")
 
 #ifdef _WIN32
@@ -87,6 +86,8 @@ enum
 	MaxNetServiceKeys = 32,
 	// the value of an empty key
 	ServiceEmptyKey = 0,
+
+	PortStrMaxSize = 8
 };
 
 typedef enum ConsoleColor
@@ -176,7 +177,7 @@ static struct NetService
 } g_service = {};
 
 static FILE *g_verbose_out;
-static bool g_verbose = true;
+static bool g_verbose = false;
 
 typedef uint32_t Milliseconds;
 
@@ -204,6 +205,9 @@ static inline errno_t _PollServerTCP(NetServer *server);
 
 static inline errno_t _PollClientUDP(NetClient *client);
 static inline errno_t _PollClientTCP(NetClient *client);
+
+static errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, intptr_t value);
+static errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, intptr_t *p_value);
 
 #pragma region(conversion stuff)
 static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
@@ -674,6 +678,32 @@ errno_t NetGetServerError(const NetServer *server) {
 	return _CheckNetBase(&server->_base);
 }
 
+errno_t NetServerSetValue(NetServer *server, const NetChar *name, intptr_t value) {
+	ARG_NULL_CHECK(server);
+	ARG_NULL_CHECK(name);
+	return _SetNetObjectAttr(&server->_base, name, value);
+}
+
+errno_t NetClientSetValue(NetClient *client, const NetChar *name, intptr_t value) {
+	ARG_NULL_CHECK(client);
+	ARG_NULL_CHECK(name);
+	return _SetNetObjectAttr(&client->_base, name, value);
+}
+
+errno_t NetServerGetValue(const NetServer *server, const NetChar *name, intptr_t *p_value) {
+	ARG_NULL_CHECK(server);
+	ARG_NULL_CHECK(name);
+	ARG_NULL_CHECK(p_value);
+	return _GetNetObjectAttr(&server->_base, name, p_value);
+}
+
+errno_t NetClientGetValue(const NetClient *client, const NetChar *name, intptr_t *p_value) {
+	ARG_NULL_CHECK(client);
+	ARG_NULL_CHECK(name);
+	ARG_NULL_CHECK(p_value);
+	return _GetNetObjectAttr(&client->_base, name, p_value);
+}
+
 #pragma endregion
 
 #pragma region(utility)
@@ -1080,6 +1110,14 @@ inline errno_t _PollClientTCP(NetClient *client) {
 		break;
 	}
 
+	return EOK;
+}
+
+errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, intptr_t value) {
+	return EOK;
+}
+
+errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, intptr_t *p_value) {
 	return EOK;
 }
 
@@ -1892,7 +1930,7 @@ inline int _HostNameToAddressList(NetPort port, NetConnectionProtocol conn_proto
 
 	ADDRINFO *info_list = NULL;
 
-	char port_str[16] = {0};
+	char port_str[PortStrMaxSize] = {0};
 
 	_ultoa_s(port, port_str, ARRAYSIZE(port_str), Base10Radix);
 

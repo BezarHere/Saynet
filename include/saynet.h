@@ -193,6 +193,7 @@ typedef struct NetServer
 #ifdef __cplusplus
 extern "C" {
 #endif
+	/// @brief sets the verbose mode, defaults to `false`
 	SAYNET_API void NetSetVerbose(bool verbose);
 
 	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetCreateParams *params);
@@ -235,6 +236,36 @@ extern "C" {
 	SAYNET_API errno_t NetGetClientError(const NetClient *client);
 	/// @returns the error state of the server, 0 for valid servers
 	SAYNET_API errno_t NetGetServerError(const NetServer *server);
+
+	/// @brief sets and updates an internal value
+	/// @param server the server net object
+	/// @param name the property name
+	/// @param value the value, can be an int or a bool or even a pointer (i.e. `(intptr_t)&data`)
+	/// @returns the error code, or EOK if no errors
+	SAYNET_API errno_t NetServerSetValue(NetServer *server, const NetChar *name, intptr_t value);
+
+	/// @brief sets and updates an internal value
+	/// @param client the client net object
+	/// @param name the property name
+	/// @param value the value, can be an int or a bool or even a pointer (i.e. `(intptr_t)&data`)
+	/// @returns the error code, or EOK if no errors
+	SAYNET_API errno_t NetClientSetValue(NetClient *client, const NetChar *name, intptr_t value);
+
+	/// @brief gets an internal value
+	/// @param server the server net object
+	/// @param name the property name
+	/// @param value the ptr to the value, can be an int or a bool or even a pointer (casted to intptr_t)
+	/// @returns the error code, or EOK if no errors
+	SAYNET_API errno_t NetServerGetValue(const NetServer *server,
+																			 const NetChar *name, intptr_t *p_value);
+
+	/// @brief gets an internal value
+	/// @param client the client net object
+	/// @param name the property name
+	/// @param value the ptr to the value, can be an int or a bool or even a pointer (casted to intptr_t)
+	/// @returns the error code, or EOK if no errors
+	SAYNET_API errno_t NetClientGetValue(const NetClient *client,
+																			 const NetChar *name, intptr_t *p_value);
 
 #ifdef __cplusplus
 }
