@@ -87,8 +87,23 @@ enum
 	// the value of an empty key
 	ServiceEmptyKey = 0,
 
-	PortStrMaxSize = 8
+	PortStrMaxSize = 8,
+
+	PropertyNameSize = 64,
+	PropertyNameMaxLn = PropertyNameSize - 1,
+
+	PropertyDescSize = 256,
+	PropertyDescMaxLn = PropertyDescSize - 1,
+
+	PropertiesCount = 4,
 };
+
+typedef enum AccessLevel
+{
+	eAcc_Public,
+	eAcc_Private,
+	eAcc_Readonly,
+} AccessLevel;
 
 typedef enum ConsoleColor
 {
@@ -128,6 +143,20 @@ typedef struct SocketAddress
 	int length;
 } SocketAddress;
 
+struct InternalProperty;
+
+typedef struct InternalProperty
+{
+	NetChar name[PropertyNameSize];
+	NetChar desc[PropertyDescSize];
+
+	AccessLevel access_level;
+	uint32_t id;
+
+	// TODO
+
+} InternalProperty;
+
 typedef uint64_t ServiceKey;
 
 typedef struct NetInternalData
@@ -138,6 +167,8 @@ typedef struct NetInternalData
 	ServiceKey service_key;
 
 	NetCreateParams connection_params;
+
+	InternalProperty properties[PropertiesCount];
 } NetInternalData;
 
 typedef struct AddressListNode
@@ -206,8 +237,8 @@ static inline errno_t _PollServerTCP(NetServer *server);
 static inline errno_t _PollClientUDP(NetClient *client);
 static inline errno_t _PollClientTCP(NetClient *client);
 
-static errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, intptr_t value);
-static errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, intptr_t *p_value);
+static errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, NetValue value);
+static errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, NetValue *p_value);
 
 #pragma region(conversion stuff)
 static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
@@ -678,26 +709,26 @@ errno_t NetGetServerError(const NetServer *server) {
 	return _CheckNetBase(&server->_base);
 }
 
-errno_t NetServerSetValue(NetServer *server, const NetChar *name, intptr_t value) {
+errno_t NetServerSetValue(NetServer *server, const NetChar *name, NetValue value) {
 	ARG_NULL_CHECK(server);
 	ARG_NULL_CHECK(name);
 	return _SetNetObjectAttr(&server->_base, name, value);
 }
 
-errno_t NetClientSetValue(NetClient *client, const NetChar *name, intptr_t value) {
+errno_t NetClientSetValue(NetClient *client, const NetChar *name, NetValue value) {
 	ARG_NULL_CHECK(client);
 	ARG_NULL_CHECK(name);
 	return _SetNetObjectAttr(&client->_base, name, value);
 }
 
-errno_t NetServerGetValue(const NetServer *server, const NetChar *name, intptr_t *p_value) {
+errno_t NetServerGetValue(const NetServer *server, const NetChar *name, NetValue *p_value) {
 	ARG_NULL_CHECK(server);
 	ARG_NULL_CHECK(name);
 	ARG_NULL_CHECK(p_value);
 	return _GetNetObjectAttr(&server->_base, name, p_value);
 }
 
-errno_t NetClientGetValue(const NetClient *client, const NetChar *name, intptr_t *p_value) {
+errno_t NetClientGetValue(const NetClient *client, const NetChar *name, NetValue *p_value) {
 	ARG_NULL_CHECK(client);
 	ARG_NULL_CHECK(name);
 	ARG_NULL_CHECK(p_value);
@@ -1113,11 +1144,11 @@ inline errno_t _PollClientTCP(NetClient *client) {
 	return EOK;
 }
 
-errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, intptr_t value) {
+errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, NetValue value) {
 	return EOK;
 }
 
-errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, intptr_t *p_value) {
+errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, NetValue *p_value) {
 	return EOK;
 }
 
