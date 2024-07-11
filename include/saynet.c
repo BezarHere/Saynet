@@ -57,6 +57,13 @@
 #define ERR_LOG(code, msg) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
 #define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
 
+#define ARG_NULL_CHECK(arg) if (arg == NULL) ERR_LOG(EINVAL, "Unexpected null argument: '" #arg "'")
+#define ARG_NULL_CHECK_V(arg, ...) if (arg == NULL) ERR_LOG_V(EINVAL, "Unexpected null argument: '" #arg "' %s", __VA_ARGS__)
+
+static const char *l_msg_psize_null = \
+"null 'psize', psize is a in/out ptr to a size_t, " \
+"should contain *in* length/size; overwriten by the *out* length/size";
+
 #pragma region(defines)
 
 
@@ -296,6 +303,9 @@ static inline void *memclear(void *mem, size_t size) {
 #pragma region(lib funcs)
 
 errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
+	ARG_NULL_CHECK(client);
+	ARG_NULL_CHECK(params);
+
 	int result_code = 0;
 
 	client->_base.socket = INVALID_SOCKET;
@@ -337,6 +347,9 @@ errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
 }
 
 errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
+	ARG_NULL_CHECK(server);
+	ARG_NULL_CHECK(params);
+
 	int result_code = 0;
 
 	server->_base.socket = INVALID_SOCKET;
@@ -376,12 +389,16 @@ errno_t NetOpenServer(NetServer *server, const NetCreateParams *params) {
 }
 
 errno_t NetCloseClient(NetClient *client) {
+	ARG_NULL_CHECK(client);
+
 	_DestroyNetBase(&client->_base);
 
 	return EOK;
 }
 
 errno_t NetCloseServer(NetServer *server) {
+	ARG_NULL_CHECK(server);
+
 	_DestroyNetBase(&server->_base);
 
 	{
@@ -404,6 +421,8 @@ errno_t NetCloseServer(NetServer *server) {
 }
 
 errno_t NetPollClient(NetClient *client) {
+	ARG_NULL_CHECK(client);
+
 	const errno_t state = NetGetClientError(client);
 	if (state != EOK)
 	{
@@ -419,6 +438,8 @@ errno_t NetPollClient(NetClient *client) {
 }
 
 errno_t NetPollServer(NetServer *server) {
+	ARG_NULL_CHECK(server);
+
 	const errno_t state = NetGetServerError(server);
 	if (state != EOK)
 	{
@@ -445,16 +466,22 @@ errno_t NetPollServer(NetServer *server) {
 }
 
 const NetCreateParams *NetClientGetCreateParams(const NetClient *client) {
+	ARG_NULL_CHECK(client);
 	return &client->_base._internal->connection_params;
 }
 
 const NetCreateParams *NetServerGetCreateParams(const NetServer *server) {
+	ARG_NULL_CHECK(server);
 	return &server->_base._internal->connection_params;
 }
 
 errno_t NetClientSendToUDP(NetClient *client,
-													 const void *data, size_t *size,
+													 const void *data, size_t *psize,
 													 const NetUserAddress *address) {
+	ARG_NULL_CHECK(client);
+	ARG_NULL_CHECK(data);
+	ARG_NULL_CHECK_V(psize, l_msg_psize_null);
+	ARG_NULL_CHECK(address);
 	SocketAddress sock_addr = {0};
 
 	//! FIXME: error-out if the send address is identical to the client's address (INVALID IN UDP)
@@ -474,7 +501,7 @@ errno_t NetClientSendToUDP(NetClient *client,
 		client->_base.socket,
 		(const char *)data,
 		// FIXME: this will overflow! check for overflow later
-		(int)*size,
+		(int)*psize,
 		0,
 		(const SOCKADDR *)&sock_addr.data,
 		sock_addr.length
@@ -483,9 +510,9 @@ errno_t NetClientSendToUDP(NetClient *client,
 	if (result_code <= -1)
 	{
 		const int error = _GetLastNetError();
-		const size_t original_size = *size;
+		const size_t original_size = *psize;
 
-		*size = 0;
+		*psize = 0;
 
 		if (_IsSocketDisconnectionError(error))
 		{
@@ -500,21 +527,25 @@ errno_t NetClientSendToUDP(NetClient *client,
 		);
 	}
 
-	*size = result_code;
+	*psize = result_code;
 
 	return result_code;
 }
 
-errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
+errno_t NetClientSend(NetClient *client, const void *data, size_t *psize) {
+	ARG_NULL_CHECK(client);
+	ARG_NULL_CHECK(data);
+	ARG_NULL_CHECK_V(psize, l_msg_psize_null);
+
 	// FIXME: this will overflow! check for overflow later
-	int result = send(client->_base.socket, data, (int)*size, 0);
+	int result = send(client->_base.socket, data, (int)*psize, 0);
 
 	if (result == SOCKET_ERROR)
 	{
 		const int error = _GetLastNetError();
-		const size_t original_size = *size;
+		const size_t original_size = *psize;
 
-		*size = 0;
+		*psize = 0;
 
 		if (_IsSocketDisconnectionError(error))
 		{
@@ -532,8 +563,13 @@ errno_t NetClientSend(NetClient *client, const void *data, size_t *size) {
 	return EOK;
 }
 
-errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const void *data, size_t *size) {
-	const int original_size = (int)min(*size, INT32_MAX);
+errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const void *data, size_t *psize) {
+	ARG_NULL_CHECK(server);
+	ARG_NULL_CHECK_V(client_id, "; broadcasting not implemented rn!");
+	ARG_NULL_CHECK(data);
+	ARG_NULL_CHECK_V(psize, l_msg_psize_null);
+
+	const int original_size = (int)min(*psize, INT32_MAX);
 	int result = 0;
 
 	result = send(client_id->socket, data, original_size, 0);
@@ -549,7 +585,7 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const voi
 	{
 		const int error = _GetLastNetError();
 
-		*size = 0;
+		*psize = 0;
 
 		if (_IsSocketDisconnectionError(error))
 		{
@@ -571,7 +607,7 @@ errno_t NetServerSend(NetServer *server, const NetClientID *client_id, const voi
 		);
 	}
 
-	*size = result;
+	*psize = result;
 
 	return EOK;
 }
@@ -1017,8 +1053,8 @@ inline errno_t _PollClientTCP(NetClient *client) {
 			break;
 		}
 
-		// there is data, notify user 
-		if (size > 0)
+		// if there is data and notify procedure, notify user 
+		if (size > 0 && client->proc_server_recv != NULL)
 		{
 			NetPacketData packet = {};
 
