@@ -339,7 +339,7 @@ static inline void _Imp_Verbose(const NetChar *format, ...);
 
 static inline void _PutColor(FILE *out_fp, ConsoleColor color);
 
-static inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property);
+static inline errno_t _ParseProperty(const NetChar *src, InternalProperty *property);
 static inline errno_t _GenerateProperties(InternalProperty *properties);
 static inline NetInternalData *_CreateInternalData();
 static inline void _DestroyInternalData(NetInternalData *ptr);
@@ -386,8 +386,9 @@ static const NetChar *_FindSubstr(const NetChar *substr, const NetChar *str, siz
 // tag are: <`name`> blah blah blah </`name`>
 // returns an empty range if none are found
 static NetStrRange _MatchTags(const NetChar *name, const NetChar *src);
-
 static NetStrRange _TrimWhiteSpace(const NetChar *str, size_t length);
+
+static int64_t _StrToInt(const NetChar *str, size_t max_length);
 
 static inline void *memclear(void *mem, size_t size) {
 	return memset(mem, 0, size);
@@ -1825,10 +1826,10 @@ void _PutColor(FILE *out_fp, ConsoleColor color) {
 	fprintf(out_fp, "\033[%dm", color);
 }
 
-inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
+inline errno_t _ParseProperty(const NetChar *src, InternalProperty *property) {
 	static const NetChar name_name[] = NETSTR("name");
 	static const NetChar desc_name[] = NETSTR("desc");
-	static const NetChar acc_name[] = NETSTR("acc");
+	static const NetChar acc_name[] = NETSTR("access");
 	static const NetChar id_name[] = NETSTR("id");
 
 	static const struct
@@ -1845,7 +1846,11 @@ inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
 	NetStrRange acc_content = _MatchTags(acc_name, src);
 	NetStrRange id_content = _MatchTags(id_name, src);
 
-	if (name_content.length != 0)
+	if (name_content.length == 0)
+	{
+		VERBOSE_V("property %p has no name!", property);
+	}
+	else
 	{
 		strncpy(
 			property->name,
@@ -1854,7 +1859,11 @@ inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
 		);
 	}
 
-	if (desc_content.length != 0)
+	if (desc_content.length == 0)
+	{
+		VERBOSE_V("property %p has no description!", property);
+	}
+	else
 	{
 		strncpy(
 			property->desc,
@@ -1863,7 +1872,11 @@ inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
 		);
 	}
 
-	if (acc_content.length != 0)
+	if (acc_content.length == 0)
+	{
+		VERBOSE_V("property %p has no access level!", property);
+	}
+	else
 	{
 		for (size_t i = 0; i < ARRAYSIZE(access_names); i++)
 		{
@@ -1873,6 +1886,15 @@ inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
 				break;
 			}
 		}
+	}
+
+	if (id_content.length == 0)
+	{
+		VERBOSE_V("property %p has no id value!", property);
+	}
+	else
+	{
+		property->id = _StrToInt(id_content.start, id_content.length);
 	}
 
 	return EOK;
@@ -2714,6 +2736,53 @@ NetStrRange _TrimWhiteSpace(const NetChar *str, size_t length) {
 	range.start = str + leading;
 	range.length = length - (leading + trailing);
 	return range;
+}
+
+int64_t _StrToInt(const NetChar *str, size_t max_length) {
+	static const int64_t pow10[] = {
+		1LL,
+		10LL,
+		100LL,
+		1000LL,
+		10000LL,
+		100000LL,
+		1000000LL,
+		10000000LL,
+		100000000LL,
+		1000000000LL,
+		10000000000LL,
+		100000000000LL,
+		1000000000000LL,
+		10000000000000LL,
+		100000000000000LL,
+		1000000000000000LL,
+		10000000000000000LL,
+		100000000000000000LL,
+		1000000000000000000LL,
+	};
+
+	int64_t value = 0;
+	bool negative = false;
+
+	if (*str == '-')
+	{
+		negative = true;
+		str++;
+		max_length--;
+	}
+
+	max_length = max(ARRAYSIZE(pow10), max_length);
+
+	for (size_t i = 0; i < max_length && str[i]; i++)
+	{
+		if (str[i] < '0' || str[i] > '9')
+		{
+			break;
+		}
+		value += (str[i] - '0') * pow10[i];
+	}
+
+	return value * (negative ? -1 : 1);
 }
 
 #pragma endregion
