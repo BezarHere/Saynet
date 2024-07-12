@@ -54,10 +54,10 @@
 
 #define VERBOSE_V(format, ...) _Imp_Verbose("%s:%d: " format "\n", __FUNCTION__, __LINE__, __VA_ARGS__);
 
-#define ERROR_ENTRY(name) case name: return (#name) + 1
+#define ERROR_ENTRY(name) case name: return NETSTR(#name) + 1
 
 // skip the 'WSA' part
-#define ERROR_ENTRY_WSA(name) case name: return (#name)
+#define ERROR_ENTRY_WSA(name) case name: return NETSTR(#name)
 
 #define ERR_LOG(code, msg) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
 #define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
@@ -379,7 +379,7 @@ static inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_f
 static inline bool _IsSocketDisconnectionError(int error_code);
 
 static inline errno_t _GetLastNetError();
-static inline const char *_GetErrorName(errno_t error);
+static inline const NetChar *_GetErrorName(errno_t error);
 
 // returns NULL if there is no match
 static const NetChar *_FindSubstr(const NetChar *substr, const NetChar *str, size_t max_length);
@@ -413,6 +413,10 @@ void NetSetVerbose(bool verbose) {
 
 void NetSetColorOutput(bool color) {
 	g_color_output = color;
+}
+
+const NetChar *NetGetErrorName(errno_t error) {
+	return _GetErrorName(error);
 }
 
 errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
@@ -2448,7 +2452,17 @@ inline NetClientIDListNode *_AppendClientIDNode(NetClientIDListNode **p_first,
 }
 
 inline bool _IsSocketDisconnectionError(int error_code) {
-	return error_code == WSAESHUTDOWN || error_code == WSAECONNRESET || error_code == WSAECONNABORTED;
+	switch (error_code)
+	{
+	case WSAESHUTDOWN:
+	case WSAECONNRESET:
+	case WSAECONNABORTED:
+	case WSAECONNREFUSED:
+	case WSAENOTCONN:
+		return true;
+	default:
+		return false;
+	}
 }
 
 // for portablity
@@ -2462,10 +2476,10 @@ inline errno_t _GetLastNetError() {
 // then the hex representation of the error code will be returned
 // ----
 // return value should not be freed!
-inline const char *_GetErrorName(const errno_t error_code) {
+inline const NetChar *_GetErrorName(const errno_t error_code) {
 	enum { template_str_size = 16, hex_radix = 16 };
 
-	static char template_str[template_str_size] = {'0', 'x'};
+	static NetChar template_str[template_str_size] = {'0', 'x'};
 	switch (error_code)
 	{
 		ERROR_ENTRY(EPERM);

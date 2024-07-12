@@ -200,6 +200,8 @@ extern "C" {
 	/// @brief sets whether to use ANSI color codes while logging, defaults to `true`
 	SAYNET_API void NetSetColorOutput(bool color);
 
+	SAYNET_API const NetChar *NetGetErrorName(errno_t error);
+
 	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetCreateParams *params);
 	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetCreateParams *params);
 
