@@ -36,6 +36,12 @@
 #define OUT
 #define INOUT
 
+#ifdef WIDE_NETCHAR
+#define NETSTR(str) L## str
+#else
+#define NETSTR(str) str
+#endif
+
 #define BOOL_ALPHA(cond) ((cond) ? "true" : "false")
 
 #define ASSERT_CODE_RET(code) if ((code) != EOK) return code
@@ -56,8 +62,16 @@
 #define ERR_LOG(code, msg) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
 #define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
 
-#define ARG_NULL_CHECK(arg) if (arg == NULL) ERR_LOG(EINVAL, "Unexpected null argument: '" #arg "'")
-#define ARG_NULL_CHECK_V(arg, ...) if (arg == NULL) ERR_LOG_V(EINVAL, "Unexpected null argument: '" #arg "' %s", __VA_ARGS__)
+#define ARG_NULL_CHECK(arg) if ((arg) == NULL) ERR_LOG(EINVAL, "Unexpected null argument: '" #arg "'")
+#define ARG_NULL_CHECK_V(arg, ...) if ((arg) == NULL) ERR_LOG_V(EINVAL, "Unexpected null argument: '" #arg "' %s", __VA_ARGS__)
+
+#define PUT_ARR_STR(dst, src) strcpy_s(dst, ARRAYSIZE(dst), src)
+
+#ifdef __cplusplus
+#define CTOR(type, ctor) type## ctor
+#else
+#define CTOR(type, ctor) (type)ctor
+#endif
 
 static const char *l_msg_psize_null = \
 "null 'psize', psize is a in/out ptr to a size_t, " \
@@ -96,6 +110,8 @@ enum
 	PropertyDescMaxLn = PropertyDescSize - 1,
 
 	ObjectPropertiesCount = 4,
+
+	MatchTagNameMaxLength = 32
 };
 
 typedef enum AccessLevel
@@ -104,12 +120,6 @@ typedef enum AccessLevel
 	eAcc_Private,
 	eAcc_Readonly,
 } AccessLevel;
-
-typedef enum PropertyOperation
-{
-	ePropOp_Read,
-	ePropOp_Write,
-} PropertyOperation;
 
 typedef enum ConsoleColor
 {
@@ -128,6 +138,12 @@ typedef enum SocketTimeoutProperty
 } SocketTimeoutProperty;
 
 typedef _NetObject NetObject;
+
+typedef struct NetStrRange
+{
+	const NetChar *start;
+	size_t length;
+} NetStrRange;
 
 typedef struct InAddress
 {
@@ -276,7 +292,7 @@ static inline NetConnectionProtocol _NativeSTToConnectionProtocol(int socktype);
 static inline int _ConnectionProtocolToNativeIP(NetConnectionProtocol proto);
 
 static inline short _AddressTypeToNative(NetAddressType type);
-static inline NetAddressType _NativeToAddressType(short type);
+static inline NetAddressType _NativeToAddressType(unsigned short type);
 
 static inline int _ConvertNetAddressToInAddr(const NetAddress *address, InAddress *output);
 static inline int _ConvertInAddrToNetAddress(const InAddress *in_addr, NetAddress *output);
@@ -316,21 +332,23 @@ static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
 static inline int _SetMaxMessageSize(NetSocket socket, int new_size);
 
 // will not display the code if it's EOK
-static inline int _Error(int code, const char *format, ...);
+static inline int _Error(int code, const NetChar *format, ...);
 // will not display the code if it's EOK
-static inline int _Warning(int code, const char *format, ...);
-static inline void _Imp_Verbose(const char *format, ...);
+static inline int _Warning(int code, const NetChar *format, ...);
+static inline void _Imp_Verbose(const NetChar *format, ...);
 
 static inline void _PutColor(FILE *out_fp, ConsoleColor color);
 
+static inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property);
+static inline errno_t _GenerateProperties(InternalProperty *properties);
 static inline NetInternalData *_CreateInternalData();
 static inline void _DestroyInternalData(NetInternalData *ptr);
 
 static inline void _CloseClientID(const NetClientID *client_id);
 static inline void _CloseSocket(NetSocket socket);
 
-static inline void _AbortServer(NetServer *server, const char *reason);
-static inline void _AbortClient(NetClient *client, const char *reason);
+static inline void _AbortServer(NetServer *server, const NetChar *reason);
+static inline void _AbortClient(NetClient *client, const NetChar *reason);
 
 static inline NetClientIDListNode *_CreateClientIDNode(const NetClientID *client_id);
 static inline void _FreeClientIDNode(NetClientIDListNode *node);
@@ -362,8 +380,25 @@ static inline bool _IsSocketDisconnectionError(int error_code);
 static inline errno_t _GetLastNetError();
 static inline const char *_GetErrorName(errno_t error);
 
+// returns NULL if there is no match
+static const NetChar *_FindSubstr(const NetChar *substr, const NetChar *str, size_t max_length);
+
+// tag are: <`name`> blah blah blah </`name`>
+// returns an empty range if none are found
+static NetStrRange _MatchTags(const NetChar *name, const NetChar *src);
+
+static NetStrRange _TrimWhiteSpace(const NetChar *str, size_t length);
+
 static inline void *memclear(void *mem, size_t size) {
 	return memset(mem, 0, size);
+}
+
+static inline bool streql(const NetChar *left, const NetChar *right) {
+	return strcmp(left, right) == 0;
+}
+
+static inline bool strieql(const NetChar *left, const NetChar *right) {
+	return stricmp(left, right) == 0;
 }
 
 #pragma endregion
@@ -1260,7 +1295,7 @@ short _AddressTypeToNative(NetAddressType type) {
 	}
 }
 
-inline NetAddressType _NativeToAddressType(short type) {
+inline NetAddressType _NativeToAddressType(unsigned short type) {
 	switch (type)
 	{
 	case AF_INET:
@@ -1723,7 +1758,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 }
 
 /// @returns any value passed in `code`
-int _Error(int code, const char *format, ...) {
+int _Error(int code, const NetChar *format, ...) {
 	_PutColor(stdout, eFGClr_Red);
 
 	if (code == EOK)
@@ -1746,7 +1781,7 @@ int _Error(int code, const char *format, ...) {
 	return code;
 }
 
-inline int _Warning(int code, const char *format, ...) {
+inline int _Warning(int code, const NetChar *format, ...) {
 	_PutColor(stdout, eFGClr_Red);
 
 	if (code == EOK)
@@ -1769,7 +1804,7 @@ inline int _Warning(int code, const char *format, ...) {
 	return code;
 }
 
-inline void _Imp_Verbose(const char *format, ...) {
+inline void _Imp_Verbose(const NetChar *format, ...) {
 	if (!g_verbose)
 	{
 		return;
@@ -1788,6 +1823,100 @@ inline void _Imp_Verbose(const char *format, ...) {
 
 void _PutColor(FILE *out_fp, ConsoleColor color) {
 	fprintf(out_fp, "\033[%dm", color);
+}
+
+inline errno_t _PraseProperty(const NetChar *src, InternalProperty *property) {
+	static const NetChar name_name[] = NETSTR("name");
+	static const NetChar desc_name[] = NETSTR("desc");
+	static const NetChar acc_name[] = NETSTR("acc");
+	static const NetChar id_name[] = NETSTR("id");
+
+	static const struct
+	{
+		const NetChar *name; AccessLevel access;
+	} access_names[] = {
+		{ NETSTR("public"), eAcc_Public},
+		{ NETSTR("private"), eAcc_Private},
+		{ NETSTR("readonly"), eAcc_Readonly}
+	};
+
+	NetStrRange name_content = _MatchTags(name_name, src);
+	NetStrRange desc_content = _MatchTags(desc_name, src);
+	NetStrRange acc_content = _MatchTags(acc_name, src);
+	NetStrRange id_content = _MatchTags(id_name, src);
+
+	if (name_content.length != 0)
+	{
+		strncpy(
+			property->name,
+			name_content.start,
+			min(ARRAYSIZE(property->name) - 1, name_content.length)
+		);
+	}
+
+	if (desc_content.length != 0)
+	{
+		strncpy(
+			property->desc,
+			desc_content.start,
+			min(ARRAYSIZE(property->desc) - 1, desc_content.length)
+		);
+	}
+
+	if (acc_content.length != 0)
+	{
+		for (size_t i = 0; i < ARRAYSIZE(access_names); i++)
+		{
+			if (strieql(acc_content.start, access_names[i].name))
+			{
+				property->access_level = access_names[i].access;
+				break;
+			}
+		}
+	}
+
+	return EOK;
+}
+
+inline errno_t _GenerateProperties(InternalProperty *const properties) {
+
+	{
+		InternalProperty *blocking = &properties[0];
+		PUT_ARR_STR(blocking->name, "blocking");
+		PUT_ARR_STR(
+			blocking->desc,
+			("the blocking state which the net object is in\n"
+			 "setting it to true (1) will make any polling request block execution on it's thread\n"
+			 "setting it to false (0, default) will make polling requests non-blocking\n")
+		);
+
+		blocking->access_level = eAcc_Public;
+		blocking->id = FIONBIO;
+
+		// blocking->set_proc = ?;
+		// blocking->get_proc = ?;
+	}
+
+
+	{
+		InternalProperty *timeout = &properties[1];
+		PUT_ARR_STR(timeout->name, "timeout");
+		PUT_ARR_STR(
+			timeout->desc,
+			("network operation (polling) timeout\n" \
+			 "only used when blocking it set to true.\n" \
+			 "makes the network stop blocking execution and continue after a given amount of *milliseconds*\n" \
+			 "default is device/driver dependent")
+		);
+
+		timeout->access_level = eAcc_Public;
+		timeout->id = FIOASYNC;
+
+		// timeout->set_proc = ?;
+		// timeout->get_proc = ?;
+	}
+
+	return EOK;
 }
 
 inline NetInternalData *_CreateInternalData() {
@@ -1810,6 +1939,8 @@ inline NetInternalData *_CreateInternalData() {
 	}
 
 	memclear(data->recv_buffer, data->recv_buffer_sz);
+
+	_GenerateProperties(data->properties);
 
 	return data;
 }
@@ -1834,14 +1965,12 @@ inline void _CloseSocket(NetSocket socket) {
 	closesocket(socket);
 }
 
-inline void _AbortServer(NetServer *server, const char *reason) {
-	// TODO: colorize/use colorized print function to something like YELLOW
+inline void _AbortServer(NetServer *server, const NetChar *reason) {
 	ERR_LOG_V(E_ABORT, "server: aborted hosting: reason=\"%s\"\n", reason);
 	NetCloseServer(server);
 }
 
-inline void _AbortClient(NetClient *client, const char *reason) {
-	// TODO: colorize/use colorized print function to something like YELLOW
+inline void _AbortClient(NetClient *client, const NetChar *reason) {
 	ERR_LOG_V(E_ABORT, "client: connection aborted: reason=\"%s\"\n", reason);
 	NetCloseClient(client);
 }
@@ -2482,6 +2611,109 @@ inline const char *_GetErrorName(const errno_t error_code) {
 		_ultoa_s(error_code, template_str + 2, template_str_size - 2, hex_radix);
 		return template_str;
 	}
+}
+
+const NetChar *_FindSubstr(const NetChar *substr, const NetChar *str, size_t max_length) {
+	for (size_t i = 0; i < max_length && str[i]; i++)
+	{
+		if (substr[0] != str[i])
+		{
+			continue;
+		}
+
+		int result = 1;
+		for (size_t j = 1; substr[j]; j++)
+		{
+			// found string end before fully matching substr, no match
+			if (str[i + j] == 0)
+			{
+				return NULL;
+			}
+
+			// found a mismatch
+			if (substr[j] != str[i + j])
+			{
+				result = 0;
+				break;
+			}
+		}
+
+		// matched substr, return
+		if (result == 1)
+		{
+			return &str[i];
+		}
+	}
+
+	return NULL;
+}
+
+NetStrRange _MatchTags(const NetChar *name, const NetChar *src) {
+	const size_t name_length = min(strlen(name), MatchTagNameMaxLength);
+
+	// +4 for the '<' , '/' , '>' and the NULL termination
+	NetChar tag[MatchTagNameMaxLength + 4] = {0};
+
+	// setup the tag to be [NULL]<'name'>
+	strcpy_s(tag + 2, ARRAYSIZE(tag) - 2, name);
+	tag[1] = '<';
+	tag[2 + name_length] = '>';
+	tag[3 + name_length] = '\0';
+
+	// first char of tag is reserved for later and it's null, skip it
+	const NetChar *start_tag = _FindSubstr(tag + 1, src, _TRUNCATE);
+
+	// no start tag
+	if (start_tag == NULL)
+	{
+		return CTOR(NetStrRange, {0});
+	}
+
+	const NetChar *content_begin = start_tag + strlen(tag + 1);
+
+	// change tag to be the closing tag [NULL]<'name'> to </'name'>
+	tag[0] = '<';
+	tag[1] = '/';
+	const NetChar *end_tag = _FindSubstr(tag, start_tag, _TRUNCATE);
+
+	// no closing tag
+	if (end_tag == NULL)
+	{
+		return CTOR(NetStrRange, {0});
+	}
+
+	return _TrimWhiteSpace(content_begin, end_tag - content_begin);
+}
+
+NetStrRange _TrimWhiteSpace(const NetChar *str, size_t length) {
+	size_t leading = 0;
+	size_t trailing = 0;
+
+	for (; leading < length; leading++)
+	{
+		if (!iswspace(str[leading]))
+		{
+			break;
+		}
+	}
+
+	for (; trailing < length; trailing++)
+	{
+		if (!iswspace(str[length - (trailing + 1)]))
+		{
+			break;
+		}
+	}
+
+	if (trailing + leading > length)
+	{
+		return CTOR(NetStrRange, {0});
+	}
+
+	NetStrRange range;
+	range.start = str + leading;
+	range.length = length - (leading + trailing);
+	return range;
 }
 
 #pragma endregion
