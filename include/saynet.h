@@ -197,6 +197,8 @@ extern "C" {
 #endif
 	/// @brief sets the verbose mode, defaults to `false`
 	SAYNET_API void NetSetVerbose(bool verbose);
+	/// @brief sets whether to use ANSI color codes while logging, defaults to `true`
+	SAYNET_API void NetSetColorOutput(bool color);
 
 	SAYNET_API errno_t NetOpenClient(NetClient *client, const NetCreateParams *params);
 	SAYNET_API errno_t NetOpenServer(NetServer *server, const NetCreateParams *params);

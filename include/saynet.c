@@ -252,6 +252,7 @@ static struct NetService
 
 static FILE *g_verbose_out;
 static bool g_verbose = false;
+static bool g_color_output = true;
 
 typedef uint32_t Milliseconds;
 
@@ -408,6 +409,10 @@ static inline bool strieql(const NetChar *left, const NetChar *right) {
 
 void NetSetVerbose(bool verbose) {
 	g_verbose = verbose;
+}
+
+void NetSetColorOutput(bool color) {
+	g_color_output = color;
 }
 
 errno_t NetOpenClient(NetClient *client, const NetCreateParams *params) {
@@ -1823,6 +1828,11 @@ inline void _Imp_Verbose(const NetChar *format, ...) {
 }
 
 void _PutColor(FILE *out_fp, ConsoleColor color) {
+	if (!g_color_output)
+	{
+		return;
+	}
+
 	fprintf(out_fp, "\033[%dm", color);
 }
 
