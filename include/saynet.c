@@ -95,7 +95,7 @@ enum
 	PropertyDescSize = 256,
 	PropertyDescMaxLn = PropertyDescSize - 1,
 
-	PropertiesCount = 4,
+	ObjectPropertiesCount = 4,
 };
 
 typedef enum AccessLevel
@@ -104,6 +104,12 @@ typedef enum AccessLevel
 	eAcc_Private,
 	eAcc_Readonly,
 } AccessLevel;
+
+typedef enum PropertyOperation
+{
+	ePropOp_Read,
+	ePropOp_Write,
+} PropertyOperation;
 
 typedef enum ConsoleColor
 {
@@ -145,6 +151,27 @@ typedef struct SocketAddress
 
 struct InternalProperty;
 
+typedef struct PropertySetParams
+{
+	const NetObject *p_object;
+	NetValue value;
+	// for set operations
+	bool forced;
+} PropertySetParams;
+
+typedef struct PropertyGetParams
+{
+	const NetObject *p_object;
+	NetValue *p_value;
+	NetValue default_value;
+} PropertyGetParams;
+
+typedef errno_t(*PropertySetProc)(const PropertySetParams *params,
+																	const struct InternalProperty *property);
+
+typedef errno_t(*PropertyGetProc)(const PropertyGetParams *params,
+																	const struct InternalProperty *property);
+
 typedef struct InternalProperty
 {
 	NetChar name[PropertyNameSize];
@@ -153,8 +180,8 @@ typedef struct InternalProperty
 	AccessLevel access_level;
 	uint32_t id;
 
-	// TODO
-
+	PropertySetProc set_proc;
+	PropertyGetProc get_proc;
 } InternalProperty;
 
 typedef uint64_t ServiceKey;
@@ -168,7 +195,7 @@ typedef struct NetInternalData
 
 	NetCreateParams connection_params;
 
-	InternalProperty properties[PropertiesCount];
+	InternalProperty properties[ObjectPropertiesCount];
 } NetInternalData;
 
 typedef struct AddressListNode
@@ -237,8 +264,10 @@ static inline errno_t _PollServerTCP(NetServer *server);
 static inline errno_t _PollClientUDP(NetClient *client);
 static inline errno_t _PollClientTCP(NetClient *client);
 
-static errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, NetValue value);
-static errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, NetValue *p_value);
+static errno_t _FindNetObjectProperty(const NetObject *object, const NetChar *name, InternalProperty **pp_property);
+
+static errno_t _SetNetObjectProperty(NetObject *object, const NetChar *name, NetValue value);
+static errno_t _GetNetObjectProperty(const NetObject *object, const NetChar *name, NetValue *p_value);
 
 #pragma region(conversion stuff)
 static inline int _ConnectionProtocolToNativeST(NetConnectionProtocol proto);
@@ -712,27 +741,27 @@ errno_t NetGetServerError(const NetServer *server) {
 errno_t NetServerSetValue(NetServer *server, const NetChar *name, NetValue value) {
 	ARG_NULL_CHECK(server);
 	ARG_NULL_CHECK(name);
-	return _SetNetObjectAttr(&server->_base, name, value);
+	return _SetNetObjectProperty(&server->_base, name, value);
 }
 
 errno_t NetClientSetValue(NetClient *client, const NetChar *name, NetValue value) {
 	ARG_NULL_CHECK(client);
 	ARG_NULL_CHECK(name);
-	return _SetNetObjectAttr(&client->_base, name, value);
+	return _SetNetObjectProperty(&client->_base, name, value);
 }
 
 errno_t NetServerGetValue(const NetServer *server, const NetChar *name, NetValue *p_value) {
 	ARG_NULL_CHECK(server);
 	ARG_NULL_CHECK(name);
 	ARG_NULL_CHECK(p_value);
-	return _GetNetObjectAttr(&server->_base, name, p_value);
+	return _GetNetObjectProperty(&server->_base, name, p_value);
 }
 
 errno_t NetClientGetValue(const NetClient *client, const NetChar *name, NetValue *p_value) {
 	ARG_NULL_CHECK(client);
 	ARG_NULL_CHECK(name);
 	ARG_NULL_CHECK(p_value);
-	return _GetNetObjectAttr(&client->_base, name, p_value);
+	return _GetNetObjectProperty(&client->_base, name, p_value);
 }
 
 #pragma endregion
@@ -1144,11 +1173,38 @@ inline errno_t _PollClientTCP(NetClient *client) {
 	return EOK;
 }
 
-errno_t _SetNetObjectAttr(NetObject *object, const NetChar *name, NetValue value) {
+errno_t _FindNetObjectProperty(const NetObject *p_object, const NetChar *name, InternalProperty **pp_property) {
+	*pp_property = NULL;
+
+	const size_t len = strnlen_s(name, PropertyNameMaxLn + 1);
+	// too long, can't be a property name
+	if (len > PropertyNameMaxLn)
+	{
+		return ERR_LOG_V(
+			EBADMSG,
+			"property names should be at most %d 'NetChar's long!",
+			PropertyNameMaxLn
+		);
+	}
+
+	const NetInternalData *internals = p_object->_internal;
+	for (size_t i = 0; i < ObjectPropertiesCount; i++)
+	{
+		if (strcmpi(internals->properties[i].name, name) == 0)
+		{
+			*pp_property = &internals->properties[i];
+			return EOK;
+		}
+	}
+
+	return EFAULT;
+}
+
+errno_t _SetNetObjectProperty(NetObject *object, const NetChar *name, NetValue value) {
 	return EOK;
 }
 
-errno_t _GetNetObjectAttr(const NetObject *object, const NetChar *name, NetValue *p_value) {
+errno_t _GetNetObjectProperty(const NetObject *object, const NetChar *name, NetValue *p_value) {
 	return EOK;
 }
 
