@@ -1805,7 +1805,10 @@ int _Imp_Error(int code, const NetChar *format, ...) {
 		return code;
 	}
 
-	_PutColor(stdout, eFGClr_Red);
+	if (g_color_output)
+	{
+		_PutColor(stdout, eFGClr_Red);
+	}
 
 	if (code == EOK)
 	{
@@ -1821,7 +1824,10 @@ int _Imp_Error(int code, const NetChar *format, ...) {
 	vprintf(format, va_list);
 	va_end(va_list);
 
-	_PutColor(stdout, eFGClr_Clear);
+	if (g_color_output)
+	{
+		_PutColor(stdout, eFGClr_Clear);
+	}
 	fputc('\n', stdout);
 
 	return code;
@@ -1838,7 +1844,10 @@ inline int _Imp_Warning(int code, const NetChar *format, ...) {
 		return code;
 	}
 
-	_PutColor(stdout, eFGClr_Red);
+	if (g_color_output)
+	{
+		_PutColor(stdout, eFGClr_Red);
+	}
 
 	if (code == EOK)
 	{
@@ -1854,7 +1863,10 @@ inline int _Imp_Warning(int code, const NetChar *format, ...) {
 	vprintf(format, va_list);
 	va_end(va_list);
 
-	_PutColor(stdout, eFGClr_Clear);
+	if (g_color_output)
+	{
+		_PutColor(stdout, eFGClr_Clear);
+	}
 	fputc('\n', stdout);
 
 	return code;
