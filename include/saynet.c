@@ -59,13 +59,16 @@
 // skip the 'WSA' part
 #define ERROR_ENTRY_WSA(name) case name: return NETSTR(#name)
 
-#define ERR_LOG(code, msg) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
-#define ERR_LOG_V(code, msg, ...) _Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
+#define ERR_LOG(code, msg) _Imp_Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__)
+#define ERR_LOG_V(code, msg, ...) _Imp_Error(code, "%s:%d:: " msg, __FUNCTION__, __LINE__, __VA_ARGS__)
 
 #define ARG_NULL_CHECK(arg) if ((arg) == NULL) ERR_LOG(EINVAL, "Unexpected null argument: '" #arg "'")
 #define ARG_NULL_CHECK_V(arg, ...) if ((arg) == NULL) ERR_LOG_V(EINVAL, "Unexpected null argument: '" #arg "' %s", __VA_ARGS__)
 
 #define PUT_ARR_STR(dst, src) strcpy_s(dst, ARRAYSIZE(dst), src)
+
+#define DEBUG_OUTPUT_UNSET ((FILE *)1)
+#define DEBUG_OUTPUT_DEFAULT stdout
 
 #ifdef __cplusplus
 #define CTOR(type, ctor) type## ctor
@@ -250,7 +253,10 @@ static struct NetService
 	ServiceKey keys[MaxNetServiceKeys];
 } g_service = {};
 
-static FILE *g_verbose_out;
+static FILE *g_debug_output = DEBUG_OUTPUT_UNSET;
+static NetDebugCallback g_debug_callback = NULL;
+
+static FILE *g_verbose_out = NULL;
 static bool g_verbose = false;
 static bool g_color_output = true;
 
@@ -332,10 +338,11 @@ static inline int _SetInternalBufferSizes(NetSocket socket, int new_size);
 // sets the max msg size, Has no meaning for stream oriented sockets
 static inline int _SetMaxMessageSize(NetSocket socket, int new_size);
 
+static inline bool __CheckDebugOutput();
 // will not display the code if it's EOK
-static inline int _Error(int code, const NetChar *format, ...);
+static inline int _Imp_Error(int code, const NetChar *format, ...);
 // will not display the code if it's EOK
-static inline int _Warning(int code, const NetChar *format, ...);
+static inline int _Imp_Warning(int code, const NetChar *format, ...);
 static inline void _Imp_Verbose(const NetChar *format, ...);
 
 static inline void _PutColor(FILE *out_fp, ConsoleColor color);
@@ -406,6 +413,16 @@ static inline bool strieql(const NetChar *left, const NetChar *right) {
 #pragma endregion
 
 #pragma region(lib funcs)
+
+NetDebugCallback NetSetCallback(NetDebugCallback callback) {
+	const NetDebugCallback old = g_debug_callback;
+	g_debug_callback = callback;
+	return old;
+}
+
+void NetSetDebugOutput(FILE *output) {
+	g_debug_output = output;
+}
 
 void NetSetVerbose(bool verbose) {
 	g_verbose = verbose;
@@ -543,7 +560,7 @@ errno_t NetPollClient(NetClient *client) {
 	const errno_t state = NetGetClientError(client);
 	if (state != EOK)
 	{
-		return _Error(state, "Bad client! can not poll (check client with 'NetGetClientError')");
+		return _Imp_Error(state, "Bad client! can not poll (check client with 'NetGetClientError')");
 	}
 
 	if (client->_base._internal->connection_params.protocol != eNConnectProto_TCP)
@@ -560,7 +577,7 @@ errno_t NetPollServer(NetServer *server) {
 	const errno_t state = NetGetServerError(server);
 	if (state != EOK)
 	{
-		return _Error(state, "Bad server! can not poll (check server with 'NetGetServerError')");
+		return _Imp_Error(state, "Bad server! can not poll (check server with 'NetGetServerError')");
 	}
 
 	// not dealing with overflows in casts (int <-> size_t)
@@ -1008,7 +1025,7 @@ inline errno_t _PollShared_UDP(NetSocket socket, NetInternalHandle handle,
 			// unrecoverable error, stop receiving
 			if (size == -2)
 			{
-				return _Error(result_code, "%s: fatal error reported from _RecvAnyUDP", context);
+				return _Imp_Error(result_code, "%s: fatal error reported from _RecvAnyUDP", context);
 			}
 
 			// _RecvAnyUDP should have reported something, skip to next iteration
@@ -1336,7 +1353,7 @@ inline void _DestroyNetBase(NetObject *net_obj) {
 inline errno_t _CheckNetBase(const NetObject *net_obj) {
 	if (net_obj == NULL)
 	{
-		return _Error(EINVAL, "Can not check a null NetObject! (bug?)");
+		return _Imp_Error(EINVAL, "Can not check a null NetObject! (bug?)");
 	}
 
 	// no socket
@@ -1730,7 +1747,7 @@ inline int _SetInternalBufferSizes(NetSocket socket, const int new_size) {
 	result_code = setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (const char *)&new_size, sizeof(new_size));
 	if (result_code == SOCKET_ERROR)
 	{
-		return _Warning(
+		return _Imp_Warning(
 			_GetLastNetError(),
 
 			"failed to set the SO_SNDBUF for the socket %llu to %d",
@@ -1755,7 +1772,7 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 
 	if (result_code == SOCKET_ERROR)
 	{
-		return _Warning(
+		return _Imp_Warning(
 			_GetLastNetError(),
 
 			"failed to set the SO_MAX_MSG_SIZE for the socket %llu to %d",
@@ -1767,8 +1784,27 @@ inline int _SetMaxMessageSize(NetSocket socket, const int new_size) {
 	return EOK;
 }
 
+inline bool __CheckDebugOutput() {
+	if (g_debug_output == DEBUG_OUTPUT_UNSET)
+	{
+		g_debug_output = DEBUG_OUTPUT_DEFAULT;
+	}
+
+	return g_debug_output != NULL;
+}
+
 /// @returns any value passed in `code`
-int _Error(int code, const NetChar *format, ...) {
+int _Imp_Error(int code, const NetChar *format, ...) {
+	if (g_debug_callback)
+	{
+		g_debug_callback(code, eNLogSeverity_Error);
+	}
+
+	if (!__CheckDebugOutput())
+	{
+		return code;
+	}
+
 	_PutColor(stdout, eFGClr_Red);
 
 	if (code == EOK)
@@ -1791,7 +1827,17 @@ int _Error(int code, const NetChar *format, ...) {
 	return code;
 }
 
-inline int _Warning(int code, const NetChar *format, ...) {
+inline int _Imp_Warning(int code, const NetChar *format, ...) {
+	if (g_debug_callback)
+	{
+		g_debug_callback(code, eNLogSeverity_Warning);
+	}
+
+	if (!__CheckDebugOutput())
+	{
+		return code;
+	}
+
 	_PutColor(stdout, eFGClr_Red);
 
 	if (code == EOK)
@@ -2341,7 +2387,7 @@ inline int _ProcessGeneralCreateParams(NetCreateParams *params) {
 		if (i == 0)
 		{
 			params->address.name[NetAddressBufferSize - 1] = 0;
-			(void)_Warning(
+			(void)_Imp_Warning(
 				EBADF,
 				("create params's address (\"%s\") has no null termination,"
 				 " setting one at the address buffer's end"),
@@ -2482,6 +2528,7 @@ inline const NetChar *_GetErrorName(const errno_t error_code) {
 	static NetChar template_str[template_str_size] = {'0', 'x'};
 	switch (error_code)
 	{
+		ERROR_ENTRY(EOK);
 		ERROR_ENTRY(EPERM);
 		ERROR_ENTRY(ENOENT);
 		ERROR_ENTRY(ESRCH);

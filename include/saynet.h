@@ -5,6 +5,7 @@
 * Zahr abdulatif babker (C) 2023-2024
 */
 #pragma once
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -70,6 +71,13 @@ typedef SAYNET_ENUM NetSocketFlags
 	eNSockFlag_Readable = 0x02,
 } NetSocketFlags;
 
+typedef SAYNET_ENUM NetLogSeverity
+{
+	eNLogSeverity_Verbose,
+	eNLogSeverity_Warning,
+	eNLogSeverity_Error,
+} NetLogSeverity;
+
 typedef char NetAddressBuffer[NetAddressBufferSize];
 
 typedef struct NetAddress
@@ -124,6 +132,8 @@ typedef struct NetClientIDListNode
 
 	struct NetClientIDListNode *_next;
 } NetClientIDListNode;
+
+typedef void (*NetDebugCallback)(errno_t code, NetLogSeverity severity);
 
 // will kick the client if the returns value is non-zero
 typedef int (*NetClientJoinedProc)(const struct NetClientID *client_id);
@@ -195,6 +205,14 @@ typedef struct NetServer
 #ifdef __cplusplus
 extern "C" {
 #endif
+	/// @returns last callback (null if none are set)
+	SAYNET_API NetDebugCallback NetSetCallback(NetDebugCallback callback);
+
+	/// @brief sets the debug output handle (default to stdout) for error printout. 
+	/// @brief does not influence NetDebugCallback
+	/// @param output the output handle, or NULL to disable
+	SAYNET_API void NetSetDebugOutput(FILE *output);
+
 	/// @brief sets the verbose mode, defaults to `false`
 	SAYNET_API void NetSetVerbose(bool verbose);
 	/// @brief sets whether to use ANSI color codes while logging, defaults to `true`
